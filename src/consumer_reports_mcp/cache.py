@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from . import lexical
 from .ingest import _int, category_id_of, display_name_of, product_index_rows, products_of
 
 USER_VERSION = 2  # 2: category_slug_alias — a published slug must keep resolving
@@ -931,22 +932,22 @@ class Cache:
             return conn.execute("SELECT COUNT(*) FROM category_index").fetchone()[0]
 
     def search_categories(self, q: str, limit: int = 25) -> list[dict]:
-        """Case-insensitive substring on display name OR slug (hyphens as spaces), exact first."""
-        needle = q.strip().lower()
+        """Token match on display name OR slug (hyphens as spaces), ranked by `lexical.Match.key`
+        — exact first, then the head token, then coverage — and alphabetical among equals. A row
+        qualifies when the query's head token matches or at least half its tokens do
+        (`Match.qualifies`); requiring the whole query as one substring meant
+        `over-the-range microwaves` found nothing beside *Over-the-Range Microwave Ovens*."""
+        needle = lexical.tokens(q)
         if not needle:
             return []
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM category_index WHERE dead_at IS NULL").fetchall()
         hits = []
         for r in rows:
-            name = (r["display_name"] or "").lower()
-            slug = (r["slug"] or "").replace("-", " ").lower()
-            hay_name = name
-            hay_slug = slug
-            n2 = needle.replace("-", " ")
-            if n2 in hay_name or n2 in hay_slug or needle in (r["slug"] or "").lower():
-                exact = n2 in (hay_name, hay_slug)
-                hits.append((0 if exact else 1, name or slug, self._index_dict(r)))
+            m = lexical.match(needle, [r["display_name"], r["slug"]])
+            if m.qualifies:
+                name = (r["display_name"] or r["slug"] or "").lower()
+                hits.append((m.key, name, self._index_dict(r)))
         hits.sort(key=lambda h: (h[0], h[1], h[2]["category_id"]))
         return [h[2] for h in hits[:limit]]
 

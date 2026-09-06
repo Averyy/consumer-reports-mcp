@@ -1,0 +1,75 @@
+[
+ {
+  "label": "washing machines",
+  "links": {
+   "overview": "/appliances/washing-machines/",
+   "ratings": "/appliances/washing-machines/front-load-washer/c28739/",
+   "recommended": "/appliances/washing-machines/front-load-washer/recommended/c28739/"
+  },
+  "id": 28983,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "portable washing machines",
+  "type": "OTL_CATEGORY"
+ },
+ {
+  "label": "rowing machines",
+  "links": {
+   "ratings": "/health/rowing-machines/c36939/",
+   "recommended": "/health/rowing-machines/recommended/c36939/"
+  },
+  "id": 36939,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "rowing machines",
+  "links": {
+   "overview": "/health/rowing-machines/",
+   "ratings": "/health/rowing-machines/c36939/",
+   "recommended": "/health/rowing-machines/recommended/c36939/"
+  },
+  "id": 36938,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "compact washers",
+  "links": {
+   "ratings": "/appliances/washing-machines/compact-washers/c37106/",
+   "recommended": "/appliances/washing-machines/compact-washers/recommended/c37106/"
+  },
+  "id": 37106,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "pressure washers",
+  "links": {
+   "overview": "/home-garden/pressure-washers/",
+   "ratings": "/home-garden/pressure-washers/c33902/",
+   "recommended": "/home-garden/pressure-washers/recommended/c33902/"
+  },
+  "id": 37188,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "front-load washers",
+  "links": {
+   "ratings": "/appliances/washing-machines/front-load-washer/c28739/",
+   "recommended": "/appliances/washing-machines/front-load-washer/recommended/c28739/"
+  },
+  "id": 28739,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "body wash",
+  "type": "OTL_CATEGORY"
+ },
+ {
+  "label": "popcorn machines",
+  "type": "OTL_CATEGORY"
+ },
+ {
+  "label": "karaoke machines",
+  "type": "OTL_CATEGORY"
+ }
+]

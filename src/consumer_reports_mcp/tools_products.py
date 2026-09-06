@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from . import envelope as E
+from . import lexical
 from .attributes import NUMERIC_KINDS, Definition, build_definitions, coerce
 from .cache import row_id
 from .config import FILTER_VALUES_CAP, SEARCH_CAP, TYPEAHEAD_MIN_CHARS, TYPEAHEAD_URL
@@ -681,8 +682,12 @@ async def cr_search(rt: Runtime, query: str, refresh: bool = False) -> E.SearchE
             data=None,
         )
     fetched = await rt.discovery.ensure_az_index(refresh=refresh)
-    cats: list[E.SearchCategoryHit] = []
+    # (match.key, source rank, source order, hit): ranked once across BOTH sources, so a
+    # better lexical fit wins whichever produced it, and CR's typeahead order decides ties —
+    # in source order, 'pressure cookers' answered Pressure Washers first (SPEC §7)
+    ranked: list[tuple[tuple, int, int, E.SearchCategoryHit]] = []
     seen: set[int] = set()
+    q_tokens = lexical.tokens(q)
     if len(q) >= TYPEAHEAD_MIN_CHARS:
         try:
             result = await rt.transport.fetch(
@@ -694,37 +699,57 @@ async def cr_search(rt: Runtime, query: str, refresh: bool = False) -> E.SearchE
             warnings.append("typeahead_unavailable")
             log.info("typeahead unavailable: %s", type(exc).__name__)
         else:
+            from .discovery import franchise_of, slug_of
+
             for hit in _typeahead_hits(payload):
                 if hit["id"] in seen:
                     continue
                 seen.add(hit["id"])
                 row = rt.cache.index_row(hit["id"])
-                from .discovery import franchise_of, slug_of
-
-                cats.append(
-                    E.SearchCategoryHit(
-                        kind="category",
-                        id=f"c{hit['id']}",
-                        slug=(row or {}).get("slug") or slug_of(hit["path"]),
-                        name=(row or {}).get("display_name") or hit.get("label"),
-                        franchise=(row or {}).get("franchise") or franchise_of(hit["path"]),
-                        source="typeahead",
+                slug = (row or {}).get("slug") or slug_of(hit["path"])
+                name = (row or {}).get("display_name") or hit.get("label")
+                # CR's label is CR's own synonym for the category ("televisions" for TVs,
+                # "washing machines" for Front-load washers): it counts as one of its texts
+                m = lexical.match(q_tokens, [name, slug, hit.get("label")])
+                ranked.append(
+                    (
+                        m.key,
+                        0,
+                        len(ranked),
+                        E.SearchCategoryHit(
+                            kind="category",
+                            id=f"c{hit['id']}",
+                            slug=slug,
+                            name=name,
+                            franchise=(row or {}).get("franchise") or franchise_of(hit["path"]),
+                            source="typeahead",
+                            match=m.kind,
+                        ),
                     )
                 )
     for row in rt.cache.search_categories(q, limit=SEARCH_CAP):
         if row["category_id"] in seen:
             continue
         seen.add(row["category_id"])
-        cats.append(
-            E.SearchCategoryHit(
-                kind="category",
-                id=f"c{row['category_id']}",
-                slug=row.get("slug"),
-                name=row.get("display_name"),
-                franchise=row.get("franchise"),
-                source="index",
+        m = lexical.match(q_tokens, [row.get("display_name"), row.get("slug")])
+        ranked.append(
+            (
+                m.key,
+                1,
+                len(ranked),
+                E.SearchCategoryHit(
+                    kind="category",
+                    id=f"c{row['category_id']}",
+                    slug=row.get("slug"),
+                    name=row.get("display_name"),
+                    franchise=row.get("franchise"),
+                    source="index",
+                    match=m.kind,
+                ),
             )
         )
+    ranked.sort(key=lambda r: r[:3])
+    cats = [r[3] for r in ranked]
     products = [
         E.SearchProductHit(
             kind="product",

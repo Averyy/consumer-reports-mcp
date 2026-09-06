@@ -1,0 +1,86 @@
+[
+ {
+  "label": "refrigerators",
+  "links": {
+   "overview": "/appliances/refrigerators/",
+   "ratings": "/appliances/refrigerators/top-freezer-refrigerator/c28722/",
+   "recommended": "/appliances/refrigerators/top-freezer-refrigerator/recommended/c28722/"
+  },
+  "id": 28978,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "wine refrigerators",
+  "links": {
+   "overview": "/appliances/wine-refrigerators/",
+   "ratings": "/appliances/wine-refrigerators/c33835/",
+   "recommended": "/appliances/wine-refrigerators/recommended/c33835/"
+  },
+  "id": 34611,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "outdoor refrigerators",
+  "links": {
+   "ratings": "/appliances/refrigerators/outdoor-refrigerators/c201295/",
+   "recommended": "/appliances/refrigerators/outdoor-refrigerators/recommended/c201295/"
+  },
+  "id": 201295,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "compact refrigerators",
+  "id": 29738,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "built-in refrigerators",
+  "links": {
+   "ratings": "/appliances/refrigerators/built-in-refrigerator/c28720/",
+   "recommended": "/appliances/refrigerators/built-in-refrigerator/recommended/c28720/"
+  },
+  "id": 28720,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "top-freezer refrigerators",
+  "links": {
+   "ratings": "/appliances/refrigerators/top-freezer-refrigerator/c28722/",
+   "recommended": "/appliances/refrigerators/top-freezer-refrigerator/recommended/c28722/"
+  },
+  "id": 28722,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "french-door refrigerators",
+  "links": {
+   "ratings": "/appliances/refrigerators/french-door-refrigerator/c37162/",
+   "recommended": "/appliances/refrigerators/french-door-refrigerator/recommended/c37162/"
+  },
+  "id": 37162,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "bottom-freezer refrigerators",
+  "links": {
+   "ratings": "/appliances/refrigerators/bottom-freezer-refrigerator/c28719/",
+   "recommended": "/appliances/refrigerators/bottom-freezer-refrigerator/recommended/c28719/"
+  },
+  "id": 28719,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "side-by-side refrigerators",
+  "links": {
+   "ratings": "/appliances/refrigerators/side-side-refrigerator/c28721/",
+   "recommended": "/appliances/refrigerators/side-side-refrigerator/recommended/c28721/"
+  },
+  "id": 28721,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "refrigerator finder",
+  "url": "/appliances/refrigerators/",
+  "type": "REDIRECT"
+ }
+]

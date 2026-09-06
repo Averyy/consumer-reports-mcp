@@ -50,6 +50,20 @@ per category, no api-key, no pagination.
   populate it. Absent → `availability: null` + `availability_not_cached` warning.
 - **`cr_search` MUST match slugs, not just display names.** The 110 sitemap-only categories have
   no display name (sitemaps carry URLs), so a name-only search cannot find Televisions.
+- **IMPORTANT: `cr_search` RANKS category hits across both sources with ONE lexical rule
+  (`lexical.Match.key`); source order is not the ranking.** In source order `'pressure cookers'`
+  answered *Pressure Washers* first and `'over-the-range microwaves'` the countertop category
+  — an assistant taking `categories[0]` described a pressure washer. Order: exact text → the
+  query's HEAD token (last word, `cookers`) → more tokens matched → tightest text → CR's
+  typeahead order, then the index alphabetically. Plain token logic: hyphens split, stopwords
+  drop, a token matches by plural strip or a ≤2-char extension (`tv`→`tvs`), never substring.
+  A typeahead hit's texts include CR's LABEL (`"washing machines"` on Front-load washers — CR's
+  synonym). Typeahead hits are reordered, never dropped; `source` stays honest; each hit carries
+  `match: exact|full|partial|none`, so five partials for `'pressure cookers'` read as "no
+  category", not an answer. `Cache.search_categories` uses the same rule (a row qualifies on
+  the head token or half the tokens), not a whole-query substring — which found nothing for
+  `'over-the-range microwaves'` and ranked *TVs* third for `'tv'`. `'instant pot'` (a brand)
+  is an honest empty; there is no synonym table.
 - **6 of the 346 sit under `/cars/` paths** (tires, dash cams, tire stores, electric scooters) but
   are PRODUCTS, not the cars API. Route on the id space, never the URL prefix.
   **Follow redirects** — some index URLs redirect to a shorter canonical path with the same

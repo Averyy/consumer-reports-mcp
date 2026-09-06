@@ -1652,13 +1652,59 @@ things, in order:
    immediately. `"dishwasher"` routes to the category on a cold cache.
 2. **Products in already-cached categories**, for model names and numbers like `B36CD10ENS`.
 
-Matching is **case-insensitive substring** on category display names and on `brandName` +
-`modelName`, with no fuzzy matching — model numbers like `B36CD10ENS` make edit-distance
-matching actively harmful, since one character is a different product. Results are labelled by
-kind (`category` vs `product`), capped at 25 per kind, and ordered exact-match first then
-alphabetically. A product miss returns `searched_categories: [...]` naming what was actually
-searched, so an empty result can never be mistaken for "CR does not rate this". Live
+Product matching is **case-insensitive substring** on `brandName` + `modelName`, with no fuzzy
+matching — model numbers like `B36CD10ENS` make edit-distance matching actively harmful, since
+one character is a different product. Results are labelled by kind (`category` vs `product`) and
+capped at 25 per kind. A product miss returns `searched_categories: [...]` naming what was
+actually searched, so an empty result can never be mistaken for "CR does not rate this". Live
 cross-category *product* search stays post-v1.
+
+**Category hits are RANKED across both sources, by one lexical rule; source order is not the
+ranking.** In source order — every typeahead hit, then the index — a fuzzy remote suggestion
+outranked an exact local match: measured 2026-09-06, `'over-the-range microwaves'` answered
+*Countertop Microwave Ovens* first and the exact category second, and `'pressure cookers'`
+answered *Pressure Washers* first, with *multi-cookers* (what CR calls a pressure cooker) fourth.
+An assistant taking `categories[0]` would describe a pressure washer. The rule lives in
+`lexical.py` and is plain token logic, no distance metric: hyphens split like spaces, function
+words (`the`, `and`, `of`…) drop out, and a query token matches a hay token when the two agree
+after a plural strip (`microwaves` ≈ `microwave`, `mattresses` ≈ `mattress`) or the hay token
+extends it by at most two characters (`tv` → `tvs`, `robot` → `robotic`) — never by substring,
+which would let `the` in `over-the-range` reach *thermostats*. A hit's texts are its display
+name, its slug and, for a typeahead hit, CR's own label (`"washing machines"` on Front-load
+washers, `"televisions"` on TVs — CR's synonym for the category, which counts as one of its
+names). The order is:
+
+1. an **exact** text — its stemmed tokens are the query's, order aside;
+2. a hit carrying the query's **head** token, its last word: `cookers` in `pressure cookers` is
+   the thing asked for and `pressure` only a modifier, so *rice cookers* and *multi-cookers*
+   outrank *Pressure Washers*, which shares only the modifier;
+3. **more query tokens matched** — *Over-the-Range Microwave Ovens* (all three) over
+   *Countertop Microwave Ovens* (one);
+4. the **tightest text** — fewest unmatched words of its own, *Mattresses* over *Mattress
+   Toppers*;
+5. **CR's typeahead order**, then the index's alphabetical order after every typeahead hit.
+   Everything the tokens leave tied is CR's call: it knows popularity and this server does not.
+   `'dryer'` returns CR's five dryer categories in CR's order, every one an equal `full` match.
+
+Typeahead hits are **reordered, never dropped**, and their `source` stays `typeahead`; the
+index remains the fallback and never becomes authoritative. Each hit carries **`match`**:
+`exact`, `full` (every query token matched), `partial`, or `none` — CR suggested it for a reason
+the tokens do not show (*Compact Washers* for `washing machine`). It is the structural version
+of the ranking: `categories[0]` with `match: "partial"` is the best of a set of weak fits, not
+the answer, and an agent reading `'pressure cookers'` sees five partials and no category.
+
+The **local index search** (`Cache.search_categories`) uses the same rule and is no longer a
+whole-query substring test — that is why `'over-the-range microwaves'` found nothing locally
+beside an almost-exact category, and why under 3 characters (no typeahead call) `'tv'` ranked
+*TVs* third behind *Phone TV Internet Bundles* alphabetically. A row qualifies when the head
+token matches or at least half the query's tokens do (`window air conditioner` reaches *Portable
+Air Conditioners*, not *Air Fryers*), ranked by the rule above and capped at 25. Slugs stay in
+the haystack for the reason given under 1.
+
+A **brand name is an honest miss**: `'instant pot'` returns no category — CR's typeahead offers
+only unlinked editorial rows and no token reaches *multi-cookers*. No synonym table is
+maintained; `cr_categories` lists the catalogue, and an empty `categories` says "no category
+name or slug resembles this", never "CR does not rate it".
 
 ### Filter taxonomy, as CR ships it
 
@@ -2201,7 +2247,7 @@ sentence in the least-read place. They are spec text:
 | `cr_filters` | What is filterable in a category and the legal values, including attribute descriptions and units. Call this before guessing filter names. |
 | `cr_reliability` | Consumer Reports **brand-level** predicted reliability and owner satisfaction for a category. Brand-level, not model-level — these are survey results per brand, not a rating of any single product. Available without a membership. |
 | `cr_categories` | The 346 Consumer Reports product categories with ids and slugs. Cars have their own tools. |
-| `cr_search` | Find which category covers a product, or a model by name/number among already-cached categories. An empty result means "not in what has been fetched", never "CR does not rate it" — the response names what was searched. |
+| `cr_search` | Find which category covers a product, or a model by name/number among already-cached categories. Category hits are ranked and carry `match`: a `partial` first hit is the best of weak fits, not the answer. An empty result means "not in what has been fetched", never "CR does not rate it" — the response names what was searched. |
 | `cr_car_search` | Find a Consumer Reports car by make, model and year. Returns identifiers, not ratings — pass one to `cr_car`. |
 | `cr_cars` | List Consumer Reports car model-years by type, make or new/used. Returns safety verdict, popular score, fuel economy and incentives in one request; pass `detail="standard"` to add road-test scores, which cost one request per car. |
 | `cr_car` | Full Consumer Reports record for one car model-year: Overall Score, road-test score, per-test ratings, predicted reliability, owner satisfaction, crash tests and specs. |

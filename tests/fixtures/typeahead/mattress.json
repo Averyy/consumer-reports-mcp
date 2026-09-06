@@ -1,0 +1,41 @@
+[
+ {
+  "label": "mattresses",
+  "links": {
+   "overview": "/home-garden/mattresses/",
+   "ratings": "/home-garden/mattresses/mattress/c28705/",
+   "recommended": "/home-garden/mattresses/mattress/recommended/c28705/"
+  },
+  "id": 28948,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "mattress toppers",
+  "links": {
+   "ratings": "/home-garden/mattress-toppers/c33632/",
+   "recommended": "/home-garden/mattress-toppers/recommended/c33632/"
+  },
+  "id": 33632,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "mattress toppers",
+  "links": {
+   "overview": "/home-garden/mattress-toppers/",
+   "ratings": "/home-garden/mattress-toppers/c33632/",
+   "recommended": "/home-garden/mattress-toppers/recommended/c33632/"
+  },
+  "id": 200781,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "mattress stores",
+  "url": "/home-garden/mattresses/mattress-stores/c34706/",
+  "type": "REDIRECT"
+ },
+ {
+  "label": "mattress finder",
+  "url": "/mattressfinder/",
+  "type": "REDIRECT"
+ }
+]

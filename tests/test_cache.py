@@ -452,9 +452,10 @@ def test_search_categories_matches_slug_without_display_name(cache):
     )
     assert [r["category_id"] for r in cache.search_categories("tvs")] == [28700]
     hits = [r["category_id"] for r in cache.search_categories("mattress")]
-    assert hits == [34706, 28705]  # no exact match → alphabetical ("mattress stores" first)
-    assert [r["category_id"] for r in cache.search_categories("mattresses")] == [28705]
-    assert cache.search_categories("television") == []  # substring, no synonyms locally
+    assert hits == [28705, 34706]  # the plural is exact after the stem; the tighter text first
+    assert [r["category_id"] for r in cache.search_categories("mattresses")] == [28705, 34706]
+    assert [r["category_id"] for r in cache.search_categories("tv")] == [28700]  # tv → tvs
+    assert cache.search_categories("television") == []  # tokens, no synonyms locally
 
 
 def test_search_products_labels_provenance(cache, anon_env):

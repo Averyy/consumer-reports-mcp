@@ -519,12 +519,21 @@ class CategoriesEnvelope(Strict):
 
 
 class SearchCategoryHit(Strict):
+    """One category `cr_search` found. `source` says which source produced it (`typeahead`,
+    CR's own matching, or `index`, the local A-Z + sitemap index); `match` says how well its
+    name, slug or CR's label cover the query lexically — `exact`, `full` (every query token),
+    `partial`, or `none` (CR suggested it for a reason the tokens do not show, e.g. *Compact
+    Washers* for `washing machine`). The list is ranked by `match` first and CR's order second,
+    so `categories[0]` with `match: "partial"` is the best of a set of weak fits, not the
+    answer."""
+
     kind: Literal["category"]
     id: str
     slug: str | None
     name: str | None
     franchise: str | None
-    source: str
+    source: Literal["typeahead", "index"]
+    match: Literal["exact", "full", "partial", "none"]
 
 
 class SearchProductHit(Strict):

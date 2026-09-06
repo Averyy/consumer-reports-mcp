@@ -15,7 +15,7 @@ from consumer_reports_mcp.tools_products import (
     cr_ratings,
     cr_search,
 )
-from tests.conftest import FakeResponse, RuntimeHarness, fixture_envelope
+from tests.conftest import FIXTURES, FakeResponse, RuntimeHarness, fixture_envelope
 
 CAT_URL = WWW + "/appliances/refrigerators/french-door-refrigerator/c37162/"
 
@@ -713,6 +713,179 @@ async def test_search_products_reflect_retained_member_row(tmp_path, c37162):
     )
     out = await cr_search(h.rt, "Brand A")
     assert out.data.products and all(p.data_tier == "member" for p in out.data.products)
+
+
+def _typeahead_fixture(h: RuntimeHarness, name: str) -> None:
+    """A payload measured live on 2026-09-06 (tests/fixtures/typeahead/)."""
+    _typeahead(h, json.loads((FIXTURES / "typeahead" / f"{name}.json").read_text()))
+
+
+async def test_search_ranks_the_head_noun_above_the_modifier(tmp_path):
+    """'pressure cookers' answered Pressure Washers FIRST in source order — an assistant taking
+    hits[0] would describe a pressure washer. Both cooker categories are sitemap-only rows with
+    no display name, so the slug match is what ranks them; CR's order decides the rest."""
+    h = RuntimeHarness(tmp_path)
+    _typeahead_fixture(h, "pressure_cookers")
+    out = await cr_search(h.rt, "pressure cookers")
+    assert [c.id for c in out.data.categories] == [
+        "c33597",  # rice cookers
+        "c200231",  # multi-cookers — what CR calls a pressure cooker
+        "c33902",  # Pressure Washers: CR's first, lexically only the modifier
+        "c33754",  # blood pressure monitors
+        "c201301",  # High-Pressure Hose Nozzles
+    ]
+    assert all(c.match == "partial" and c.source == "typeahead" for c in out.data.categories)
+    assert out.data.categories[0].name == "rice cookers"  # CR's label, with no index name
+
+
+async def test_search_ranks_full_coverage_above_a_head_only_hit(tmp_path):
+    h = RuntimeHarness(tmp_path)
+    h.rt.cache.upsert_category_index(
+        [
+            {
+                "id": 28706,
+                "path": "/appliances/microwave-ovens/countertop-microwave-oven/c28706/",
+                "display_name": "Countertop Microwave Ovens",
+            },
+            {
+                "id": 32000,
+                "path": "/appliances/microwave-ovens/over-the-range-microwave-oven/c32000/",
+                "display_name": "Over-the-Range Microwave Ovens",
+            },
+        ],
+        "az",
+        h.now,
+    )
+    _typeahead_fixture(h, "over-the-range_microwaves")  # CR returns Countertop first
+    out = await cr_search(h.rt, "over-the-range microwaves")
+    assert [(c.id, c.match) for c in out.data.categories] == [
+        ("c32000", "full"),
+        ("c28706", "partial"),
+    ]
+    assert out.data.categories[0].name == "Over-the-Range Microwave Ovens"
+
+
+async def test_search_index_exact_match_outranks_a_typeahead_partial(tmp_path):
+    """Source order is not the ranking: a local exact match beats a remote partial one, and
+    the remote hit is kept with its `source` honest — typeahead is reordered, never dropped."""
+    h = RuntimeHarness(tmp_path)
+    h.rt.cache.upsert_category_index(
+        [
+            {
+                "id": 32000,
+                "path": "/appliances/microwave-ovens/over-the-range-microwave-oven/c32000/",
+                "display_name": "Over-the-Range Microwave Ovens",
+            }
+        ],
+        "az",
+        h.now,
+    )
+    _typeahead(
+        h,
+        [
+            {
+                "label": "microwave ovens",
+                "type": "SUPER_CATEGORY",
+                "id": 28706,
+                "links": {
+                    "ratings": "/appliances/microwave-ovens/countertop-microwave-oven/c28706/"
+                },
+            }
+        ],
+    )
+    out = await cr_search(h.rt, "over-the-range microwave ovens")
+    assert [(c.id, c.source, c.match) for c in out.data.categories] == [
+        ("c32000", "index", "exact"),
+        ("c28706", "typeahead", "partial"),
+    ]
+
+
+async def test_search_ties_keep_cr_order_and_label_synonyms_count(tmp_path):
+    h = RuntimeHarness(tmp_path)
+    _typeahead_fixture(h, "dryer")
+    out = await cr_search(h.rt, "dryer")
+    # every hit is one word plus "dryers": equal scores, so CR's order is returned verbatim
+    ids = [c.id for c in out.data.categories]
+    assert ids == ["c30563", "c34227", "c37294", "c30562", "c200858"]
+    assert {c.match for c in out.data.categories} == {"full"}
+
+    _typeahead_fixture(h, "washing_machine")
+    out = await cr_search(h.rt, "washing machine")
+    hits = [(c.id, c.match) for c in out.data.categories]
+    # CR's label "washing machines" is Front-load washers' own synonym: exact through it
+    assert hits[0] == ("c28739", "exact")
+    assert hits[1] == ("c36939", "partial")  # rowing machines: the head noun, lexically
+    assert hits[2:] == [("c37106", "none"), ("c33902", "none")]  # CR's reasons, not the tokens
+
+    _typeahead_fixture(h, "refrigerators")
+    out = await cr_search(h.rt, "refrigerators")
+    assert out.data.categories[0].id == "c28722"  # Top-Freezer, CR's generic, exact via label
+    assert out.data.categories[0].match == "exact"
+    assert {c.match for c in out.data.categories[1:]} == {"full"}
+    assert "c37162" in {c.id for c in out.data.categories}  # index rows merge in, deduped
+
+
+async def test_search_local_only_ranks_the_exact_slug_first(tmp_path):
+    """Under 3 chars there is no typeahead call, and the old alphabetical order put TVs THIRD
+    behind Phone TV Internet Bundles and TV services."""
+    h = RuntimeHarness(tmp_path)
+    h.rt.cache.upsert_category_index(
+        [
+            {
+                "id": 34937,
+                "path": "/money/phone-tv-internet-bundles/c34937/",
+                "display_name": "Phone TV Internet Bundles",
+            },
+            {"id": 34939, "path": "/money/tv-service/c34939/", "display_name": "TV services"},
+        ],
+        "az",
+        h.now,
+    )
+    out = await cr_search(h.rt, "tv")
+    assert [(c.id, c.match, c.source) for c in out.data.categories] == [
+        ("c28700", "full", "index"),
+        ("c34939", "full", "index"),
+        ("c34937", "full", "index"),
+    ]
+    assert not any(u.startswith(TYPEAHEAD_URL) for u in h.requests)
+
+    _typeahead_fixture(h, "mattress")
+    h.rt.cache.upsert_category_index(
+        [
+            {
+                "id": 34706,
+                "path": "/money/mattress-stores/c34706/",
+                "display_name": "Mattress Stores",
+            }
+        ],
+        "az",
+        h.now,
+    )
+    out = await cr_search(h.rt, "mattress")
+    # toppers (typeahead) and stores (index) score the same; CR's hit wins the tie
+    assert [(c.id, c.match, c.source) for c in out.data.categories] == [
+        ("c28705", "exact", "typeahead"),
+        ("c33632", "full", "typeahead"),
+        ("c34706", "full", "index"),
+    ]
+
+
+async def test_search_brand_name_is_an_honest_miss(tmp_path):
+    """'instant pot' is a brand; CR's category is multi-cookers and its typeahead offers only
+    unlinked OTL rows. No lexical rule reaches it, and the answer is empty rather than a guess."""
+    h = RuntimeHarness(tmp_path)
+    h.rt.cache.upsert_category_index(
+        [{"id": 200231, "path": "/appliances/multi-cookers/c200231/"}], "sitemap", h.now
+    )
+    _typeahead(
+        h,
+        [
+            {"label": "instant ramen", "type": "OTL_CATEGORY"},
+            {"label": "potato chips and tortilla chips", "type": "OTL_CATEGORY"},
+        ],
+    )
+    out = await cr_search(h.rt, "instant pot")
+    assert out.error is None and out.data.categories == [] and out.data.query == "instant pot"
 
 
 # --------------------------------------------------------------------------- batch-3 findings

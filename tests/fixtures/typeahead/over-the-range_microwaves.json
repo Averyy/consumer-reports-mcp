@@ -1,0 +1,30 @@
+[
+ {
+  "label": "microwave ovens",
+  "links": {
+   "overview": "/appliances/microwave-ovens/",
+   "ratings": "/appliances/microwave-ovens/countertop-microwave-oven/c28706/",
+   "recommended": "/appliances/microwave-ovens/countertop-microwave-oven/recommended/c28706/"
+  },
+  "id": 28973,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "countertop microwave ovens",
+  "links": {
+   "ratings": "/appliances/microwave-ovens/countertop-microwave-oven/c28706/",
+   "recommended": "/appliances/microwave-ovens/countertop-microwave-oven/recommended/c28706/"
+  },
+  "id": 28706,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "over-the-range microwave ovens",
+  "links": {
+   "ratings": "/appliances/microwave-ovens/over-the-range-microwave-oven/c32000/",
+   "recommended": "/appliances/microwave-ovens/over-the-range-microwave-oven/recommended/c32000/"
+  },
+  "id": 32000,
+  "type": "CATEGORY"
+ }
+]

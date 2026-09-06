@@ -1,0 +1,67 @@
+[
+ {
+  "label": "pressure washers",
+  "links": {
+   "overview": "/home-garden/pressure-washers/",
+   "ratings": "/home-garden/pressure-washers/c33902/",
+   "recommended": "/home-garden/pressure-washers/recommended/c33902/"
+  },
+  "id": 37188,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "rice cookers",
+  "links": {
+   "ratings": "/appliances/rice-cookers/c33597/",
+   "recommended": "/appliances/rice-cookers/recommended/c33597/"
+  },
+  "id": 33597,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "rice cookers",
+  "links": {
+   "overview": "/appliances/rice-cookers/",
+   "ratings": "/appliances/rice-cookers/c33597/",
+   "recommended": "/appliances/rice-cookers/recommended/c33597/"
+  },
+  "id": 200522,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "blood pressure monitors",
+  "links": {
+   "overview": "/health/blood-pressure-monitors/",
+   "ratings": "/health/blood-pressure-monitors/c33754/",
+   "recommended": "/health/blood-pressure-monitors/recommended/c33754/"
+  },
+  "id": 33078,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "multi-cookers",
+  "links": {
+   "overview": "/appliances/multi-cookers/",
+   "ratings": "/appliances/multi-cookers/c200231/",
+   "recommended": "/appliances/multi-cookers/recommended/c200231/"
+  },
+  "id": 200229,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "high-pressure hose nozzles",
+  "links": {
+   "ratings": "/home-garden/hose-nozzles/high-pressure-hose-nozzles/c201301/"
+  },
+  "id": 201301,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "pressure washer cleansers",
+  "type": "OTL_CATEGORY"
+ },
+ {
+  "label": "best egg cookers",
+  "type": "OTL_CATEGORY"
+ }
+]

@@ -1,0 +1,69 @@
+[
+ {
+  "label": "gas dryers",
+  "links": {
+   "ratings": "/appliances/clothes-dryers/gas-dryer/c30563/",
+   "recommended": "/appliances/clothes-dryers/gas-dryer/recommended/c30563/"
+  },
+  "id": 30563,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "hair dryers",
+  "links": {
+   "ratings": "/health/hair-styling-tools/c34227/",
+   "recommended": "/health/hair-styling-tools/recommended/c34227/"
+  },
+  "id": 34227,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "compact dryers",
+  "links": {
+   "ratings": "/appliances/clothes-dryers/compact-dryers/c37294/",
+   "recommended": "/appliances/clothes-dryers/compact-dryers/recommended/c37294/"
+  },
+  "id": 37294,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "clothes dryers",
+  "links": {
+   "overview": "/appliances/clothes-dryers/",
+   "ratings": "/appliances/clothes-dryers/electric-dryer/c30562/",
+   "recommended": "/appliances/clothes-dryers/electric-dryer/recommended/c30562/"
+  },
+  "id": 28982,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "electric dryers",
+  "links": {
+   "ratings": "/appliances/clothes-dryers/electric-dryer/c30562/",
+   "recommended": "/appliances/clothes-dryers/electric-dryer/recommended/c30562/"
+  },
+  "id": 30562,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "washer-dryer combos",
+  "links": {
+   "overview": "/appliances/washer-dryer-combo/",
+   "ratings": "/appliances/washer-dryer-combo/c200858/"
+  },
+  "id": 200856,
+  "type": "SUPER_CATEGORY"
+ },
+ {
+  "label": "all-in-one washer-dryers",
+  "links": {
+   "ratings": "/appliances/washer-dryer-combo/c200858/"
+  },
+  "id": 200858,
+  "type": "CATEGORY"
+ },
+ {
+  "label": "hair dryers",
+  "type": "OTL_CATEGORY"
+ }
+]

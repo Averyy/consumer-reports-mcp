@@ -51,8 +51,10 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "cr_search": (
         "Find which category covers a product, or a model by name/number among already-cached "
-        'categories. An empty result means "not in what has been fetched", never "CR does not '
-        'rate it" — the response names what was searched.'
+        "categories. Category hits are ranked and carry `match`: a `partial` first hit is the "
+        'best of weak fits, not the answer. An empty result means "not in what has been '
+        'fetched", never '
+        '"CR does not rate it" — the response names what was searched.'
     ),
     "cr_car_search": (
         "Find a Consumer Reports car by make, model and year. Returns identifiers, not ratings "
