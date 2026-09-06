@@ -566,7 +566,15 @@ def test_kill_browser_guard_reads_the_real_process_table():
         stderr=subprocess.DEVNULL,
     )
     try:
-        cmd, status = B._query_command_line(proc.pid)
+        # The child may still be inside `execve`; `/proc/<pid>/cmdline` is empty until it
+        # lands, and this read is fast enough to get there first. Wait for the exec, then
+        # assert — a guard that never matches still fails, it just is not raced into it.
+        deadline = time.monotonic() + 10.0
+        while True:
+            cmd, status = B._query_command_line(proc.pid)
+            if status == B.STATUS_FOUND or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
         assert status == B.STATUS_FOUND, status
         assert cmd and B.PROFILE_MARKER in cmd and B.PLAYWRIGHT_MARKER in cmd.lower(), cmd
         assert B.kill_browser(proc.pid, kill=record) is True
@@ -585,8 +593,10 @@ def test_kill_browser_guard_reads_the_real_process_table():
 
 def test_proc_cmdline_is_read_exactly_and_a_missing_pid_is_gone(tmp_path):
     """Linux reads the kernel's own argv. NUL-separated, a trailing NUL, no width to truncate
-    at; a pid with no entry is `gone`; an empty `cmdline` (a zombie) is `unreadable`; and a
-    machine with no procfs answers None so the caller falls back to `ps -ww`."""
+    at; a pid with no entry is `gone`; a machine with no procfs answers None so the caller
+    falls back to `ps -ww`; and an EMPTY `cmdline` answers None too, because the kernel empties
+    it for a zombie, a kernel thread AND a process still inside `execve` — reporting
+    `unreadable` there short-circuited the fallback and lost a race `ps` never lost."""
     assert B._proc_command_line(1, proc=str(tmp_path / "none")) is None  # no procfs here
     (tmp_path / "self").mkdir()
     (tmp_path / "self" / "cmdline").write_bytes(b"pytest\0")
@@ -604,7 +614,10 @@ def test_proc_cmdline_is_read_exactly_and_a_missing_pid_is_gone(tmp_path):
     assert B._proc_command_line(4243, proc=str(tmp_path)) == (None, B.STATUS_GONE)
     (tmp_path / "4244").mkdir()
     (tmp_path / "4244" / "cmdline").write_bytes(b"")
-    assert B._proc_command_line(4244, proc=str(tmp_path)) == (None, B.STATUS_UNREADABLE)
+    assert B._proc_command_line(4244, proc=str(tmp_path)) is None  # -> `ps`, not a verdict
+    (tmp_path / "4245").mkdir()
+    (tmp_path / "4245" / "cmdline").write_bytes(b"\0\0\0")  # all separators, no argv
+    assert B._proc_command_line(4245, proc=str(tmp_path)) is None
 
 
 def test_command_line_on_posix_asks_ps_for_the_unbounded_width(monkeypatch):

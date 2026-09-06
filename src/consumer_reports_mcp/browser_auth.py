@@ -268,8 +268,17 @@ def _command_line_argv(pid: int) -> list[str]:
 def _proc_command_line(pid: int, proc: str = "/proc") -> tuple[str | None, str] | None:
     """Linux: `/proc/<pid>/cmdline`, the kernel's own NUL-separated argv — exact, unbounded,
     no subprocess, and a pid that is gone is `ENOENT` rather than a parsed exit code. None
-    when there is no procfs at all (macOS), which sends the caller to `ps -ww`. A zombie has an
-    empty `cmdline`: unreadable, so no signal — it is already dead."""
+    when there is no procfs at all (macOS), which sends the caller to `ps -ww`.
+
+    An EMPTY `cmdline` is not an answer, so it falls through to `ps` rather than reporting
+    `unreadable`. The kernel empties it for three unrelated states: a zombie, a kernel thread,
+    and a process still inside `execve`. Reporting `unreadable` for all three short-circuited
+    the fallback and broke the third — CI 2026-09-06 failed on Linux reading a child the test
+    had just spawned, because this read has no subprocess to spawn and beat the child's own
+    exec, a race `ps` never lost since spawning it cost the milliseconds exec needed. `ps`
+    resolves all three: `<defunct>` for a zombie, `[kthread]` for a kernel thread, the real
+    argv once exec lands — and none of the first two carries the markers, so nothing that is
+    already dead or was never a browser can be signalled."""
     if not os.path.exists(f"{proc}/self/cmdline"):
         return None
     try:
@@ -283,7 +292,7 @@ def _proc_command_line(pid: int, proc: str = "/proc") -> tuple[str | None, str] 
         return None, f"{QUERY_FAILED}{type(exc).__name__}"
     text = " ".join(arg.decode("utf-8", "replace") for arg in raw.split(b"\0") if arg)
     if not text.strip():
-        return None, STATUS_UNREADABLE
+        return None  # zombie, kernel thread or mid-exec — `ps` tells them apart
     return text, STATUS_FOUND
 
 
