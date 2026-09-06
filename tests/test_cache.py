@@ -105,6 +105,41 @@ def test_family_enriches_seven_siblings_from_one_write(cache, anon_env):
     assert by_id[29738]["has_reliability_data"] is False
 
 
+def test_a_slug_id_in_cats_does_not_kill_the_write(cache, anon_env):
+    """CR's `args.cats[]` mixes category ids with PRODUCT-TYPE entries whose `id` is a slug.
+    Measured 2026-09-06: Front-Load Washers `c28739` and Electric Dryers `c30562` both ship
+    `id: "washer-dryer-pairs"`, and `int()` on it raised out of `write_category`, out of
+    `_fetch_category` and out of the tool — so those two categories answered nothing at all,
+    for every caller, on every call. A slug keys no category, so it is skipped; the integer
+    siblings beside it must still enrich."""
+    env = json.loads(json.dumps(anon_env))
+    cats = env["filter_instance"]["args"]["cats"]
+    cats.append(
+        {"id": "washer-dryer-pairs", "typeURL": "/appliances/washer-dryer-pairs/", "name": "Pairs"}
+    )
+    cats.append({"id": None, "typeURL": "/appliances/nothing/"})
+
+    cache.write_category(env, tier="anonymous", scored=False, fetched_at=days(1))
+
+    rows = {r["category_id"]: r for r in cache.list_categories(family=28978)}
+    assert 37162 in rows  # the write happened at all
+    assert rows[28722]["canonical_url"].endswith("/top-freezer-refrigerator/c28722/")
+    assert all(isinstance(cid, int) for cid in rows)
+
+
+def test_a_slug_product_id_does_not_break_row_containment(cache, anon_env):
+    """The same shape one layer down: `_row_contains` compared `int(p["id"])`, so a product
+    CR ships with a non-numeric id raised inside `cr_product`'s cache lookup."""
+    env = json.loads(json.dumps(anon_env))
+    products = env["filter_instance"]["data"]
+    if isinstance(products, dict):
+        products = list(products.values())
+    if products:
+        products[0]["id"] = "not-a-number"
+    rowid = cache.write_category(env, tier="anonymous", scored=False, fetched_at=days(1))
+    assert cache._row_contains(rowid, 999999) is False
+
+
 def test_score_range_status_three_values(cache, anon_env, c37162):
     cache.upsert_category_index(
         [{"id": 28722, "path": "/appliances/refrigerators/top-freezer-refrigerator/c28722/"}],

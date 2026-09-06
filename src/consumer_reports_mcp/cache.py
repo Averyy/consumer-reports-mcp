@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .ingest import category_id_of, display_name_of, product_index_rows, products_of
+from .ingest import _int, category_id_of, display_name_of, product_index_rows, products_of
 
 USER_VERSION = 2  # 2: category_slug_alias — a published slug must keep resolving
 SOURCES = ("az", "sitemap", "payload")
@@ -377,11 +377,20 @@ class Cache:
         paths: dict[int, str] = {}
         rel_urls: dict[int, str] = {}
         for c in args.get("cats") or []:
-            if isinstance(c, dict) and c.get("id") is not None:
-                if c.get("typeURL"):
-                    paths[int(c["id"])] = str(c["typeURL"])
-                if isinstance(c.get("reliabilityURL"), str) and c["reliabilityURL"]:
-                    rel_urls[int(c["id"])] = _absolute(c["reliabilityURL"])
+            if not isinstance(c, dict):
+                continue
+            # CR's `cats[]` mixes category ids with PRODUCT-TYPE entries whose `id` is a slug
+            # (`washer-dryer-pairs` on Front-Load Washers c28739 and Electric Dryers c30562,
+            # measured 2026-09-06). `int()` on one of those raised straight out of
+            # `write_category` and the tool, so those two categories answered nothing at all.
+            # A slug keys no category, so it is skipped — never guessed at.
+            key = _int(c.get("id"))
+            if key is None:
+                continue
+            if c.get("typeURL"):
+                paths[key] = str(c["typeURL"])
+            if isinstance(c.get("reliabilityURL"), str) and c["reliabilityURL"]:
+                rel_urls[key] = _absolute(c["reliabilityURL"])
         if (
             isinstance(args.get("reliabilityURL"), str)
             and args["reliabilityURL"]
@@ -392,10 +401,9 @@ class Cache:
         final_url = envelope.get("final_url")
         own_name = display_name_of(envelope)
         for entry in envelope.get("family") or []:
-            fid = entry.get("id")
+            fid = _int(entry.get("id"))
             if fid is None:
                 continue
-            fid = int(fid)
             if fid == cid:
                 url = final_url.split("?")[0] if final_url else None
             else:
@@ -648,7 +656,7 @@ class Cache:
         data = (envelope.get("filter_instance") or {}).get("data")
         if isinstance(data, dict):
             return str(product_id) in data
-        return any(int(p.get("id", -1)) == product_id for p in products_of(envelope))
+        return any(_int(p.get("id")) == product_id for p in products_of(envelope))
 
     def prune(self, now: datetime, ttl_days: int) -> int:
         """Delete rows older than 3×TTL, never the newest scored row per category (SPEC §8)."""
@@ -698,7 +706,10 @@ class Cache:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             for r in rows:
-                cid = int(r["id"])
+                # One malformed row must not abort the whole index write.
+                cid = _int(r.get("id"))
+                if cid is None:
+                    continue
                 url = r.get("canonical_url") or (WWW + r["path"] if r.get("path") else None)
                 slug = r.get("slug") or _slug_of(url)
                 name = r.get("display_name")
