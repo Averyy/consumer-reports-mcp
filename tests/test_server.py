@@ -201,6 +201,16 @@ async def test_tool_call_returns_structured_content(tmp_path):
     assert not getattr(err, "is_error", False)  # structured error VALUE, not a protocol error
 
 
+# What a spawned Python needs from the host on Windows and nothing else: `SystemRoot` is where
+# Winsock finds its service providers, and without it `import asyncio` dies in `_overlapped`
+# with `WinError 10106` ("the requested service provider could not be loaded or initialized")
+# — measured on the windows-latest CI runner, 2026-09-06, when this test handed the server only
+# `PATH`, `HOME` and the `CR_*` variables. None of these names a user directory, so the
+# isolation below (the server's home is `tmp_path`, never the real one) is untouched; on POSIX
+# none of them exists and nothing is added.
+WINDOWS_SYSTEM_VARS = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT")
+
+
 def test_stdio_initialize_and_tools_list(tmp_path):
     env = {  # a minimal environment: no ambient CR_* variable can perturb the handshake
         "PATH": os.environ.get("PATH", ""),
@@ -209,6 +219,7 @@ def test_stdio_initialize_and_tools_list(tmp_path):
         "CR_OFFLINE": "1",
         "PYTHONUNBUFFERED": "1",
     }
+    env.update({k: os.environ[k] for k in WINDOWS_SYSTEM_VARS if k in os.environ})
     exe = ROOT / ".venv" / "bin" / "consumer-reports-mcp"
     if not exe.exists():
         exe = Path(sys.executable).with_name("consumer-reports-mcp")

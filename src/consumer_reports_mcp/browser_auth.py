@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
 import contextlib
 import logging
 import os
@@ -201,29 +202,98 @@ async def browser_pid(browser: Any) -> int | None:
     return None
 
 
-def _command_line_argv(pid: int) -> list[str]:
-    """`ps` on POSIX. On Windows `tasklist` has no command-line column — it cannot show the
+# The process-table query's budget. It runs only in the wedged-driver case, where a slow answer
+# costs seconds and a wrong one an orphan — and on Windows a cold `Get-CimInstance` has to start
+# PowerShell and the WMI provider host first, which the old 5 s did not always cover.
+COMMAND_LINE_TIMEOUT_S = 15.0
+
+# The Windows query answers with an exit code, so "no such pid", "a pid whose command line WMI
+# will not show" and "the query itself failed" stay distinguishable — none of them is a match.
+_EXIT_GONE = 3
+_EXIT_UNREADABLE = 4
+_EXIT_QUERY_FAILED = 5
+
+# `_query_command_line`'s statuses. Only `found` carries a command line; the guard treats every
+# other status as unknown, and unknown means no kill.
+STATUS_FOUND = "found"
+STATUS_GONE = "gone"
+STATUS_UNREADABLE = "unreadable"
+QUERY_FAILED = "query_failed:"  # prefix; the suffix names why
+
+
+def _windows_command_line_script(pid: int) -> str:
+    """The PowerShell for one pid. `tasklist` has no command-line column — it cannot show the
     profile marker the guard needs — so it is `Get-CimInstance Win32_Process`, which ships with
-    every Windows PowerShell 5.1 and prints the command line, or nothing for a pid that is gone.
-    `powershell` (5.1, on the system PATH of every stock Windows), never `pwsh` (7, an optional
-    install). `Win32_Process.CommandLine` is readable without elevation for the caller's own
-    processes, which the browser is; WMI answers null for one it may not read, and null prints
-    nothing, which the guard reads as unknown — no kill. The argv and the parsing are pinned
-    by `tests/test_browser_auth.py`; the CI workflow runs the real query on a Windows runner."""
+    every Windows PowerShell 5.1. `Win32_Process.CommandLine` is readable without elevation for
+    the caller's own processes, which the browser is; WMI answers null for one it may not read.
+
+    Written to `[Console]::Out` directly rather than left to the pipeline: PowerShell's host
+    formats what falls out of a script for a console, and a long Chrome command line is the
+    one thing this query returns. Every outcome is an exit code (`_EXIT_*`), never an empty
+    stdout that a gone pid, a null `CommandLine` and a failed query would all produce alike."""
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        f"try {{ $p = Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}' }}\n"
+        f"catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit {_EXIT_QUERY_FAILED} }}\n"
+        f"if ($null -eq $p) {{ exit {_EXIT_GONE} }}\n"
+        f"if ([string]::IsNullOrEmpty($p.CommandLine)) {{ exit {_EXIT_UNREADABLE} }}\n"
+        "[Console]::Out.Write($p.CommandLine)\n"
+        "exit 0\n"
+    )
+
+
+def _command_line_argv(pid: int) -> list[str]:
+    """`ps -ww` on POSIX, `powershell -EncodedCommand` on Windows.
+
+    `-ww` is load-bearing: procps `ps` cuts each line to the terminal width — 80 columns when
+    stdout is a pipe — so on Linux the plain query returned a real Chrome's command line as
+    `/opt/google/chrome/chrome --disable-field-trial-config --disable-background-netw` (CI,
+    ubuntu-latest, 2026-09-06), never reaching the profile marker, and the guard never matched
+    there. macOS `ps` never truncates a pipe and accepts `-ww` (measured), so the spelling is
+    one for both. Linux reads `/proc/<pid>/cmdline` first (`_proc_command_line`); this is the
+    fallback where there is no procfs.
+
+    On Windows the script travels base64-encoded (UTF-16LE, PowerShell's `-EncodedCommand`),
+    so no quoting rule between `subprocess`'s argv join and PowerShell's own parser can touch
+    it. `powershell` (5.1, on the system PATH of every stock Windows), never `pwsh` (7, an
+    optional install). The argv and the parsing are pinned by `tests/test_browser_auth.py`;
+    the CI workflow runs the real query on a Windows runner."""
     if sys.platform == "win32":
-        return [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine",
-        ]
-    return ["ps", "-o", "command=", "-p", str(pid)]
+        script = _windows_command_line_script(pid).encode("utf-16-le")
+        encoded = base64.b64encode(script).decode("ascii")
+        return ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    return ["ps", "-ww", "-o", "command=", "-p", str(pid)]
 
 
-def _command_line(pid: int) -> str | None:
-    """The process's command line, None when it cannot be known (no `ps`/`powershell`, a
-    non-zero exit, or empty output because the process is gone) — and unknown means no kill.
+def _proc_command_line(pid: int, proc: str = "/proc") -> tuple[str | None, str] | None:
+    """Linux: `/proc/<pid>/cmdline`, the kernel's own NUL-separated argv — exact, unbounded,
+    no subprocess, and a pid that is gone is `ENOENT` rather than a parsed exit code. None
+    when there is no procfs at all (macOS), which sends the caller to `ps -ww`. A zombie has an
+    empty `cmdline`: unreadable, so no signal — it is already dead."""
+    if not os.path.exists(f"{proc}/self/cmdline"):
+        return None
+    try:
+        with open(f"{proc}/{int(pid)}/cmdline", "rb") as fh:
+            raw = fh.read()
+    except (FileNotFoundError, ProcessLookupError):
+        return None, STATUS_GONE
+    except PermissionError:
+        return None, STATUS_UNREADABLE
+    except OSError as exc:
+        return None, f"{QUERY_FAILED}{type(exc).__name__}"
+    text = " ".join(arg.decode("utf-8", "replace") for arg in raw.split(b"\0") if arg)
+    if not text.strip():
+        return None, STATUS_UNREADABLE
+    return text, STATUS_FOUND
+
+
+def _query_command_line(pid: int) -> tuple[str | None, str]:
+    """`(command_line, status)` for a pid from the real process table. The command line is
+    non-None exactly when the status is `found`; the other statuses — `gone`, `unreadable`,
+    `query_failed:<why>` — are why it is not, so a guard that never matches can say whether
+    the process is gone or the query is broken. CI 2026-09-06 showed both faces of a flat
+    None: on Linux the guard never matched a LIVE Chrome (truncated `ps`), and on Windows the
+    real Chrome came back None while a padded `python.exe` child had matched.
 
     Decoded with `errors="replace"`: both markers are ASCII, and a strict decode turned the
     guard into an exception. Windows PowerShell 5.1 writes redirected stdout in the console's
@@ -235,6 +305,10 @@ def _command_line(pid: int) -> str | None:
     Windows the query also runs with `CREATE_NO_WINDOW`: a console program spawned from a
     process without a console (the Desktop-launched server) otherwise opens a console window
     of its own for the duration — Playwright's Python transport hides its driver the same way."""
+    if sys.platform != "win32":
+        answer = _proc_command_line(pid)
+        if answer is not None:
+            return answer
     kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -244,14 +318,38 @@ def _command_line(pid: int) -> str | None:
             capture_output=True,
             text=True,
             errors="replace",
-            timeout=5,
+            timeout=COMMAND_LINE_TIMEOUT_S,
             **kwargs,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if out.returncode != 0 or not out.stdout.strip():
-        return None
-    return out.stdout
+    except subprocess.TimeoutExpired:
+        return None, f"{QUERY_FAILED}timeout"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"{QUERY_FAILED}{type(exc).__name__}"
+    if sys.platform == "win32":
+        if out.returncode == _EXIT_GONE:
+            return None, STATUS_GONE
+        if out.returncode == _EXIT_UNREADABLE:
+            return None, STATUS_UNREADABLE
+        if out.returncode != 0:
+            return None, f"{QUERY_FAILED}exit_{out.returncode}"
+    elif out.returncode != 0:
+        # `ps -p` of a pid that is gone exits 1 and says nothing (procps and BSD alike); a
+        # query `ps` could not run complains on stderr.
+        why = out.stderr.strip().splitlines()[0] if out.stderr.strip() else ""
+        return (None, f"{QUERY_FAILED}exit_{out.returncode}:{why}") if why else (None, STATUS_GONE)
+    if not out.stdout.strip():
+        return None, STATUS_UNREADABLE
+    return out.stdout, STATUS_FOUND
+
+
+def _command_line(pid: int) -> str | None:
+    """The process's command line, None when it cannot be known — and unknown means no kill.
+    `_query_command_line` says why; this logs it, since the guard's callers only need the
+    text and a `None` used to be silent about which of three things it meant."""
+    cmd, status = _query_command_line(pid)
+    if cmd is None:
+        log.debug("command line of pid %d unknown (%s)", pid, status)
+    return cmd
 
 
 def kill_browser(

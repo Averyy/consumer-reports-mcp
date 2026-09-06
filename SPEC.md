@@ -1000,9 +1000,17 @@ is ever published the equivalent is `pip install "consumer-reports-mcp[browser]"
    is `SIGTERM`ed by pid — Playwright launches Chrome in its own process group and it takes its
    helpers with it (measured on macOS) — from the capture's `finally` and, for a loop torn down
    under the capture, from an `atexit` reaper. A pid is only ever signalled while the process
-   table still shows a Playwright-profiled browser on it (the recycled-pid guard): `ps` on
-   POSIX, `Get-CimInstance Win32_Process` on Windows, because `tasklist` has no command-line
-   column and cannot see the profile marker. The query is decoded with `errors="replace"`
+   table still shows a Playwright-profiled browser on it (the recycled-pid guard):
+   `/proc/<pid>/cmdline` on Linux, `ps -ww` where there is no procfs, `Get-CimInstance
+   Win32_Process` on Windows, because `tasklist` has no command-line column and cannot see the
+   profile marker. The query answers `(text, status)` — `found`, `gone`, `unreadable` or
+   `query_failed:<why>` — and only `found` can match: the first CI run (2026-09-06) found
+   that a plain `ps` on Linux cuts a piped line at 80 columns, before the marker, so the guard
+   had never matched a live Chrome there, and that on Windows the real Chrome came back as a
+   bare None that could have meant any of three things. The Windows script is a base64
+   `-EncodedCommand`, writes to `[Console]::Out`, maps each outcome to an exit code under
+   `$ErrorActionPreference = 'Stop'`, and runs under `COMMAND_LINE_TIMEOUT_S` (15 s — a cold
+   WMI provider host outlasted the old 5 s). The query is decoded with `errors="replace"`
    (both markers are ASCII; Windows PowerShell 5.1 writes the OEM code page while Python
    decodes the ANSI one, and the profile path carries the user's name — a strict decode raised
    `UnicodeDecodeError`, which is not an `OSError`, out of the guard) and, on Windows, with

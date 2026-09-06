@@ -440,8 +440,12 @@ The tools
       `errors="replace"` (the markers are ASCII; PowerShell's OEM output under Python's ANSI
       decode raised on a non-ASCII username) and spawned with `CREATE_NO_WINDOW`. Then
       MEASURE it: a GitHub Actions Windows runner is a real Windows machine with Chrome
-      installed, so the branch that "needs a machine" needs a workflow file. The heavy import
-      runs off the loop.
+      installed, so the branch that "needs a machine" needs a workflow file. The first run
+      of that workflow earned its keep on both platforms nobody had run it on: Linux `ps`
+      cuts a piped line at 80 columns (`-ww`, or read `/proc/<pid>/cmdline`), so the guard
+      had never matched a real Chrome there; and the Windows query came back as one bare
+      None for three different reasons — have it answer a status (gone, unreadable, failed)
+      so a guard that never fires can say why. The heavy import runs off the loop.
 - [ ] `auth_status` with a long-poll capped under the client's tool-call limit (45 s for a 60 s
       cap, re-measured on the client build you target); returns immediately when idle.
 - [ ] Both wear the server's ordinary outer envelope with the status object under `data`; typed

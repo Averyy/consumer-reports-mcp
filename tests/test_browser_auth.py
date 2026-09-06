@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import base64
 import builtins
 import os
 import re
@@ -565,8 +566,9 @@ def test_kill_browser_guard_reads_the_real_process_table():
         stderr=subprocess.DEVNULL,
     )
     try:
-        cmd = B._command_line(proc.pid)
-        assert cmd and B.PROFILE_MARKER in cmd and B.PLAYWRIGHT_MARKER in cmd.lower()
+        cmd, status = B._query_command_line(proc.pid)
+        assert status == B.STATUS_FOUND, status
+        assert cmd and B.PROFILE_MARKER in cmd and B.PLAYWRIGHT_MARKER in cmd.lower(), cmd
         assert B.kill_browser(proc.pid, kill=record) is True
         assert sent == [(proc.pid, signal.SIGTERM)]
         assert B.kill_browser(os.getpid(), kill=record) is False  # not a Playwright browser
@@ -574,22 +576,82 @@ def test_kill_browser_guard_reads_the_real_process_table():
     finally:
         proc.kill()
         proc.wait(timeout=10)
-    assert B._command_line(proc.pid) is None  # gone: unknown, and unknown means no kill
+    # gone — and said so, not "the query failed": unknown either way, and unknown means no kill
+    assert B._query_command_line(proc.pid) == (None, B.STATUS_GONE)
+    assert B._command_line(proc.pid) is None
     assert B.kill_browser(proc.pid, kill=record) is False
     assert sent == [(proc.pid, signal.SIGTERM)]
+
+
+def test_proc_cmdline_is_read_exactly_and_a_missing_pid_is_gone(tmp_path):
+    """Linux reads the kernel's own argv. NUL-separated, a trailing NUL, no width to truncate
+    at; a pid with no entry is `gone`; an empty `cmdline` (a zombie) is `unreadable`; and a
+    machine with no procfs answers None so the caller falls back to `ps -ww`."""
+    assert B._proc_command_line(1, proc=str(tmp_path / "none")) is None  # no procfs here
+    (tmp_path / "self").mkdir()
+    (tmp_path / "self" / "cmdline").write_bytes(b"pytest\0")
+    (tmp_path / "4242").mkdir()
+    (tmp_path / "4242" / "cmdline").write_bytes(
+        b"/opt/google/chrome/chrome\0--disable-field-trial-config\0" + b"--x=" + b"y" * 400
+        + b"\0--user-data-dir=/tmp/playwright_chromiumdev_profile-abc\0--flag\0"
+    )
+    cmd, status = B._proc_command_line(4242, proc=str(tmp_path))
+    assert status == B.STATUS_FOUND
+    assert cmd == (
+        "/opt/google/chrome/chrome --disable-field-trial-config --x=" + "y" * 400
+        + " --user-data-dir=/tmp/playwright_chromiumdev_profile-abc --flag"
+    )
+    assert B._proc_command_line(4243, proc=str(tmp_path)) == (None, B.STATUS_GONE)
+    (tmp_path / "4244").mkdir()
+    (tmp_path / "4244" / "cmdline").write_bytes(b"")
+    assert B._proc_command_line(4244, proc=str(tmp_path)) == (None, B.STATUS_UNREADABLE)
+
+
+def test_command_line_on_posix_asks_ps_for_the_unbounded_width(monkeypatch):
+    """procps `ps` cuts each line to the terminal width — 80 columns on a pipe — so without
+    `-ww` a real Chrome's command line ended at `--disable-background-netw` on the Linux CI
+    runner (2026-09-06) and the guard never matched. `ps -p` of a pid that is gone exits 1
+    saying nothing; a `ps` that could not run complains, and that is a failed query."""
+    calls: list[list[str]] = []
+    answer = {"stdout": "", "stderr": "", "returncode": 0}
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        assert kwargs.get("errors") == "replace" and kwargs.get("timeout")
+        assert "creationflags" not in kwargs
+        return subprocess.CompletedProcess(
+            argv, answer["returncode"], answer["stdout"], answer["stderr"]
+        )
+
+    monkeypatch.setattr(B.sys, "platform", "linux")
+    monkeypatch.setattr(B, "_proc_command_line", lambda pid, proc="/proc": None)  # no procfs
+    monkeypatch.setattr(B.subprocess, "run", fake_run)
+    chrome = "/opt/google/chrome/chrome --user-data-dir=/tmp/playwright_chromiumdev_profile-a\n"
+    answer["stdout"] = chrome
+    assert B._query_command_line(4242) == (chrome, B.STATUS_FOUND)
+    assert calls[-1] == ["ps", "-ww", "-o", "command=", "-p", "4242"]
+    answer.update(stdout="", returncode=1)
+    assert B._query_command_line(4242) == (None, B.STATUS_GONE)
+    answer.update(stdout="", stderr="ps: illegal option -- q\nusage: ps ...\n", returncode=1)
+    assert B._query_command_line(4242) == (None, "query_failed:exit_1:ps: illegal option -- q")
+    answer.update(stdout="", stderr="", returncode=0)
+    assert B._query_command_line(4242) == (None, B.STATUS_UNREADABLE)
 
 
 def test_command_line_on_windows_queries_the_process_command_line(monkeypatch):
     """Windows was silently a no-op — `kill_browser` could never fire on a declared bundle
     platform while the docs called it unconditional. `tasklist` has no command-line column,
-    so the guard uses `Get-CimInstance Win32_Process`. Pinned here by argv and parsing; not
-    run on a Windows machine."""
+    so the guard uses `Get-CimInstance Win32_Process`, as a base64 `-EncodedCommand` (no
+    quoting between argv and PowerShell's parser) that writes the command line to
+    `[Console]::Out` and answers every other outcome with a distinct exit code. Pinned here by
+    argv and parsing; the CI workflow runs the real query on a Windows runner."""
     calls: list[list[str]] = []
     answer = {"stdout": "", "returncode": 0}
 
     def fake_run(argv, **kwargs):
         calls.append(list(argv))
-        assert kwargs.get("capture_output") and kwargs.get("text") and kwargs.get("timeout")
+        assert kwargs.get("capture_output") and kwargs.get("text")
+        assert kwargs.get("timeout") == B.COMMAND_LINE_TIMEOUT_S
         # markers are ASCII, so a byte the code page cannot decode must never become an
         # exception out of the guard (PowerShell 5.1 writes OEM, `text=True` decodes ANSI)
         assert kwargs.get("errors") == "replace"
@@ -603,24 +665,44 @@ def test_command_line_on_windows_queries_the_process_command_line(monkeypatch):
     chrome = (
         '"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" '
         "--user-data-dir=C:\\Users\\u\\AppData\\Local\\Temp\\playwright_chromiumdev_profile-x "
-        "--remote-debugging-pipe\r\n"
+        "--remote-debugging-pipe"
     )
     answer["stdout"] = chrome
+    assert B._query_command_line(4242) == (chrome, B.STATUS_FOUND)
     assert B._command_line(4242) == chrome
     argv = calls[-1]
     assert argv[0] == "powershell" and "-NoProfile" in argv and "-NonInteractive" in argv
-    assert "Get-CimInstance Win32_Process" in argv[-1] and "ProcessId=4242" in argv[-1]
-    assert "tasklist" not in " ".join(argv)
+    assert argv[-2] == "-EncodedCommand" and "-Command" not in argv
+    script = base64.b64decode(argv[-1]).decode("utf-16-le")
+    assert "Get-CimInstance Win32_Process" in script and "ProcessId=4242" in script
+    assert "[Console]::Out.Write($p.CommandLine)" in script  # not the host's formatter
+    assert "$ErrorActionPreference = 'Stop'" in script  # a failed query is not "gone"
+    assert '"' not in script  # nothing for either quoting layer to interpret
+    assert "tasklist" not in script
     sent: list[tuple[int, int]] = []
     assert B.kill_browser(4242, kill=lambda pid, sig: sent.append((pid, sig))) is True
     assert sent == [(4242, signal.SIGTERM)]
-    # a pid that is gone prints nothing under a zero exit code: unknown, so no kill
-    answer["stdout"] = "\r\n"
-    assert B._command_line(4242) is None
+    # each non-match says which it is, and none of them is a kill
+    answer.update(stdout="", returncode=3)
+    assert B._query_command_line(4242) == (None, B.STATUS_GONE)
     assert B.kill_browser(4242, kill=lambda pid, sig: sent.append((pid, sig))) is False
-    answer.update(stdout=chrome, returncode=1)
-    assert B._command_line(4242) is None
+    answer.update(stdout="", returncode=4)
+    assert B._query_command_line(4242) == (None, B.STATUS_UNREADABLE)
+    answer.update(stdout="", returncode=5)
+    assert B._query_command_line(4242) == (None, "query_failed:exit_5")
+    answer.update(stdout=chrome, returncode=1)  # a command line under a failure is no match
+    assert B._query_command_line(4242) == (None, "query_failed:exit_1")
+    assert B.kill_browser(4242, kill=lambda pid, sig: sent.append((pid, sig))) is False
+    answer.update(stdout="", returncode=0)  # the script never does this; still not a match
+    assert B._query_command_line(4242) == (None, B.STATUS_UNREADABLE)
+
+    def slow(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(B.subprocess, "run", slow)
+    assert B._query_command_line(4242) == (None, "query_failed:timeout")
     monkeypatch.setattr(B.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    assert B._query_command_line(4242) == (None, "query_failed:OSError")
     assert B._command_line(4242) is None
     assert sent == [(4242, signal.SIGTERM)]
 

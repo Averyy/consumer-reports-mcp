@@ -62,8 +62,9 @@ def _pids_with(marker: str) -> list[int]:
         argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
         out = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=30)
         return [int(line) for line in out.stdout.split() if line.strip().isdigit()]
+    # `-ww`: procps cuts a piped line at 80 columns, before the marker (CI Linux, 2026-09-06)
     out = subprocess.run(
-        ["ps", "-axo", "pid=,command="],
+        ["ps", "-A", "-ww", "-o", "pid=,command="],
         capture_output=True,
         text=True,
         errors="replace",
@@ -95,7 +96,8 @@ async def test_kill_browser_takes_a_real_chrome_and_its_helpers_down():
         try:
             pid = await B.browser_pid(browser)
             assert pid is not None, label
-            cmd = B._command_line(pid)
+            cmd, status = B._query_command_line(pid)  # the status says WHY on a miss
+            assert status == B.STATUS_FOUND, (pid, status)
             assert cmd and B.PROFILE_MARKER in cmd and B.PLAYWRIGHT_MARKER in cmd.lower(), cmd
             marker = _profile_marker(cmd)
             family = _pids_with(marker)

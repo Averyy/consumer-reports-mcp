@@ -453,19 +453,37 @@ per category, no api-key, no pagination.
   reads the pid at launch (browser-level CDP `SystemInfo.getProcessInfo`), bounds
   context+browser by `CLOSE_TIMEOUT_S` and the driver stop by `DRIVER_STOP_TIMEOUT_S`,
   `SIGTERM`s what is not confirmed closed (only while the process table still shows a
-  Playwright-profiled browser on that pid — `ps` on POSIX, `Get-CimInstance Win32_Process` on
-  Windows since `tasklist` has no command-line column; `powershell` 5.1, never `pwsh`), and an
-  `atexit` reaper covers a loop torn down under the capture. **The query is decoded with
-  `errors="replace"` and spawned with `CREATE_NO_WINDOW` on Windows**: PowerShell 5.1 writes
-  the OEM code page while `text=True` decodes ANSI, and the profile path carries the user's
-  name — a strict decode raised `UnicodeDecodeError` (not an `OSError`) out of the guard, out
-  of `_close_browser`'s `finally`, replacing a captured token; and a console program spawned
-  from a console-less server opens a console window. On Windows `os.kill` is
-  `TerminateProcess` of the browser alone; the helpers leaving with it is what
-  `tests/live/test_browser_hardware.py` measures. **The Windows branch is MEASURED by
-  `.github/workflows/ci.yml`, not only pinned**: the guard test runs the real `Get-CimInstance`
-  query on a Windows runner, and the hardware test (`CR_BROWSER_LIVE=1`, real Chrome on
-  `about:blank`, no CR traffic) runs on Windows, macOS and Linux runners.
+  Playwright-profiled browser on that pid — `/proc/<pid>/cmdline` on Linux, `ps -ww` where
+  there is no procfs, `Get-CimInstance Win32_Process` on Windows since `tasklist` has no
+  command-line column; `powershell` 5.1, never `pwsh`), and an `atexit` reaper covers a loop
+  torn down under the capture. **IMPORTANT: `ps` needs `-ww`, and the query answers a
+  STATUS, never a bare None.** The first CI run (2026-09-06) measured the guard's first
+  spelling on the two platforms it had only been reasoned about: on ubuntu-latest procps cut
+  the piped line at 80 columns — a real Chrome came back as `/opt/google/chrome/chrome
+  --disable-field-trial-config --disable-background-netw`, before the profile marker — so the
+  Linux guard NEVER matched a live browser and the pid kill never fired there (the padded-argv
+  guard test caught it, as written to); macOS `ps` never truncates a pipe (measured) and
+  accepts `-ww`, so the spelling is one for both, with Linux reading the kernel's own argv from
+  `/proc` first. On windows-latest the same `Get-CimInstance` that had matched a padded
+  `python.exe` child in the guard test returned None for the real Chrome — three causes
+  (gone, a null `CommandLine`, a failed or timed-out query) were one silent value. The query
+  is now a base64 `-EncodedCommand` (no quoting layer), writes to `[Console]::Out` (not the
+  host's formatter), answers gone / unreadable / failed as distinct exit codes under
+  `$ErrorActionPreference = 'Stop'`, and has `COMMAND_LINE_TIMEOUT_S` (15 s: a cold WMI
+  provider host is slower than the old 5 s) — `_query_command_line` returns `(text, status)`,
+  `status` in `found` / `gone` / `unreadable` / `query_failed:<why>`, and only `found` can
+  match. Which of the three Windows causes it was is what the re-run confirms; the fix covers
+  all three. **The query is decoded with `errors="replace"` and spawned with
+  `CREATE_NO_WINDOW` on Windows**: PowerShell 5.1 writes the OEM code page while `text=True`
+  decodes ANSI, and the profile path carries the user's name — a strict decode raised
+  `UnicodeDecodeError` (not an `OSError`) out of the guard, out of `_close_browser`'s
+  `finally`, replacing a captured token; and a console program spawned from a console-less
+  server opens a console window. On Windows `os.kill` is `TerminateProcess` of the browser
+  alone; the helpers leaving with it is what `tests/live/test_browser_hardware.py` measures.
+  **The Windows branch is MEASURED by `.github/workflows/ci.yml`, not only pinned**: the guard
+  test runs the real `Get-CimInstance` query on a Windows runner (it passed there on
+  2026-09-06), and the hardware test (`CR_BROWSER_LIVE=1`, real Chrome on `about:blank`, no
+  CR traffic) runs on Windows, macOS and Linux runners.
   **`src/` installs no `SIGTERM` handler**, so a Desktop `SIGTERM` skips `finally` and `atexit`
   both — harmless only because of the driver hook. The sign-in path never blocks the loop — the
   heartbeat gaps were nil, `sample` showed `kevent`, a thread-posted callback ran — so do not
@@ -739,6 +757,14 @@ uv run scripts/build_bundle.py         # the Claude Desktop .mcpb; no network, v
 - **`Settings` takes `HOME` from the environment mapping it is handed**, never from the host,
   so a test with `env={"HOME": tmp}` cannot write `session.json` into the real home. A test that
   builds `Settings(env={})` without `home=` will (it happened once; the harness now sets both).
+- **A SPAWNED CLI's constructed environment must carry Windows' system variables.** The stdio
+  test hands `consumer-reports-mcp` only `PATH`, `HOME` and the `CR_*` it means to; on the
+  windows-latest runner (2026-09-06) that process died at `import asyncio` — `_overlapped`
+  raised `OSError: [WinError 10106]`, Winsock unable to load its service providers, because
+  `SystemRoot` was absent. Ours, not the image's: `tests/test_server.py` copies
+  `WINDOWS_SYSTEM_VARS` (`SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `PATHEXT`) from the
+  host when present — none names a user directory, so `HOME=tmp_path` still isolates the
+  server, and on POSIX nothing is added.
 - **`CR_BROWSER_LIVE=1 .venv/bin/pytest tests/live/test_browser_hardware.py`** opens a real
   Chrome on `about:blank` (no CR traffic) and measures the kill of last resort on this OS;
   `.github/workflows/ci.yml` runs it, and the whole suite, on Windows, macOS and Linux runners.
