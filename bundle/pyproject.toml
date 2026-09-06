@@ -15,16 +15,8 @@ name = "consumer-reports-mcp-bundle"
 version = "0"
 description = "Claude Desktop bundle wrapper for consumer-reports-mcp"
 requires-python = ">=3.12"
-dependencies = ["consumer-reports-mcp[browser]"]
-
-[tool.uv.sources]
-# TODAY — the server is not on PyPI yet. scripts/build_bundle.py vendors the server's source
-# tree into the bundle, and this line points uv at it.
-consumer-reports-mcp = { path = "vendor/consumer-reports-mcp" }
-# AFTER PUBLICATION — the one-line switch: delete the `[tool.uv.sources]` entry above, drop the
-# `vendor()` step in scripts/build_bundle.py, and pin the release on the dependency instead:
-#
-#     dependencies = ["consumer-reports-mcp[browser]==<version>"]
-#
-# (build_bundle.py can write that pin from the root pyproject.toml exactly as it writes the
-# manifest version, so the pin never drifts either.)
+# The `==0` pin is a placeholder like `version = "0"`: scripts/build_bundle.py stamps the
+# root pyproject.toml version here, so the bundle always installs the release it was built for.
+# Desktop's `uv sync` resolves that pin from PyPI at install time, and the build has no network —
+# so build the bundle from the released tag, after the publish, never before it.
+dependencies = ["consumer-reports-mcp[browser]==0"]

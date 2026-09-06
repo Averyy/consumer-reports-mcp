@@ -11,10 +11,13 @@ What it does, and why each step exists:
   number Desktop shows and the tool list it advertises cannot drift from the code — the
   `__init__.py` version-drift bug, not reintroduced. A template that does carry a version is
   refused outright.
-* The server's own source is VENDORED into `vendor/consumer-reports-mcp/` because PyPI
-  publication has not happened; `bundle/pyproject.toml` points uv at that path and its comment
-  names the one-line switch once it has (then `vendor()` below goes too).
-* No network. This packs files; Desktop's own `uv sync` resolves dependencies at install time.
+* `bundle/pyproject.toml` depends on `consumer-reports-mcp[browser]==0`. The `==0` is a
+  placeholder exactly like the wrapper's `version = "0"`: `stamp_wrapper` writes the root
+  version over both — and refuses a wrapper missing either — so the bundle installs the release
+  it was built for and the pin cannot drift. Nothing is vendored.
+* No network. This packs files; Desktop's own `uv sync` resolves the pin from PyPI at install
+  time. So a bundle built BEFORE its release is on PyPI packs fine here and fails on the user's
+  machine: build from the released tag, after the publish.
 """
 
 from __future__ import annotations
@@ -29,7 +32,6 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDORED_FILES = ("pyproject.toml", "README.md", "LICENSE")  # what hatchling needs, plus src/
 EXCLUDE_DIRS = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache"}
 EXCLUDE_SUFFIXES = (".pyc", ".pyo")
 
@@ -68,14 +70,18 @@ def _copytree(src: Path, dst: Path) -> None:
     shutil.copytree(src, dst, ignore=ignore)
 
 
-def vendor(root: Path, staging: Path, name: str) -> Path:
-    """Copy the server's source tree into the bundle (the pre-publication path)."""
-    target = staging / "vendor" / name
-    target.mkdir(parents=True)
-    for filename in VENDORED_FILES:
-        shutil.copy2(root / filename, target / filename)
-    _copytree(root / "src", target / "src")
-    return target
+def stamp_wrapper(text: str, version: str) -> str:
+    """The wrapper's `version = "0"` and its `==0` dependency pin, both stamped with the root
+    version. A wrapper missing either placeholder is refused: unstamped, the bundle would carry
+    a wrong version or an unpinned dependency, and nothing downstream would notice."""
+    for pattern, replacement in (
+        (r'^version = "0"$', f'version = "{version}"'),
+        (r'consumer-reports-mcp\[browser\]==0"', f'consumer-reports-mcp[browser]=={version}"'),
+    ):
+        text, n = re.subn(pattern, replacement, text, count=1, flags=re.M)
+        if n != 1:
+            raise SystemExit(f"bundle/pyproject.toml lacks the placeholder {pattern!r} to stamp")
+    return text
 
 
 def stage(root: Path, out_dir: Path) -> tuple[Path, str, str]:
@@ -84,19 +90,11 @@ def stage(root: Path, out_dir: Path) -> tuple[Path, str, str]:
     if staging.exists():
         shutil.rmtree(staging)
     _copytree(root / "bundle", staging)
-    # the wrapper project carries the same version, so the artifact is self-consistent
+    # the wrapper carries the same version and pins that release: the artifact is self-consistent
     wrapper = staging / "pyproject.toml"
     wrapper.write_text(
-        re.sub(
-            r'^version = "0"',
-            f'version = "{version}"',
-            wrapper.read_text(encoding="utf-8"),
-            count=1,
-            flags=re.M,
-        ),
-        encoding="utf-8",
+        stamp_wrapper(wrapper.read_text(encoding="utf-8"), version), encoding="utf-8"
     )
-    vendor(root, staging, name)
     template = json.loads((root / "bundle" / "manifest.json").read_text(encoding="utf-8"))
     manifest = render_manifest(template, version, tool_list(root))
     (staging / "manifest.json").write_text(

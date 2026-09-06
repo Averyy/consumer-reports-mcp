@@ -345,9 +345,14 @@ each line:
   no extras and depends on `your-server[browser]`. Desktop users get the browser dependency;
   PyPI users installing the server itself stay lean. A bundle project with no `[build-system]`
   is a virtual project: `uv sync` installs its dependencies and nothing else.
-- **Before PyPI publication**, vendor the server's source into the bundle at build time and point
-  `[tool.uv.sources]` at the path. Leave the one-line switch to a pinned release as a comment in
-  that file, so the next person does not have to work it out.
+- **Pin the server release on that dependency, and generate the pin.** Check in
+  `your-server[browser]==0` and have the build script stamp the real version over the `0`, the
+  same way it stamps the manifest version below, so the bundle installs exactly the release it
+  was built for and the pin never drifts. The build needs no network to do this, which is a
+  trap: Desktop's `uv sync` resolves the pin from PyPI on the user's machine, so a bundle built
+  before its release is live packs fine and fails on install. Build from the released tag,
+  after the publish. Before the package is on PyPI at all, vendor the source into the bundle at
+  build time and point `[tool.uv.sources]` at the path instead.
 - **Generate the manifest's `version` from `pyproject.toml`. Never type it.** Keep the
   checked-in manifest without a version and have the build script refuse one that has it. Do the
   same for the `tools` list, from wherever your tool descriptions live. A version typed in two

@@ -16,9 +16,12 @@ consumer-reports-mcp`. Nothing else is installed on the machine.
 - **`manifest.json` here carries no `version` and no `tools`.** The build stamps the version from
   the root `pyproject.toml` and the tool list from `server.DESCRIPTIONS`, so neither can drift
   from the code. A template with a version in it is refused.
-- **The server's source is vendored** into `vendor/consumer-reports-mcp/` because the package is
-  not on PyPI yet; `pyproject.toml` points `uv` at that path. The comment in that file is the
-  one-line switch to a pinned release once it is published.
+- **The server is a pinned PyPI dependency, and the pin is generated.** `pyproject.toml` depends
+  on `consumer-reports-mcp[browser]==0`; the `==0` is a placeholder like `version = "0"`, and the
+  build stamps the root version over both, so a bundle always installs the release it was built
+  for. Desktop's `uv sync` resolves that pin from PyPI and the build has no network, so build
+  from the released tag after the publish — built before it, the bundle packs fine and fails at
+  the user's `uv sync`.
 - **`[browser]` is on the dependency, not an extra of this project.** `uv sync` skips the bundle
   project's own extras but honours extras named in a dependency spec, so Desktop users get
   Playwright and the in-conversation sign-in works out of the box.

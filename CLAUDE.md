@@ -551,8 +551,12 @@ per category, no api-key, no pagination.
   `scripts/build_bundle.py` from `pyproject.toml` and `server.DESCRIPTIONS`; the template in
   `bundle/manifest.json` carries neither, and a versioned template is refused. **`uv sync` skips
   the bundle project's OWN extras but honours extras on a dependency**, so the bundle depends on
-  `consumer-reports-mcp[browser]`. Pre-publication the source is vendored (`[tool.uv.sources]`
-  path); the one-line switch is commented in `bundle/pyproject.toml`. **Desktop's Linux beta
+  `consumer-reports-mcp[browser]==0` — the `==0` is a placeholder like the wrapper's
+  `version = "0"`, and `stamp_wrapper` writes the root version over both (refusing a wrapper
+  missing either), so the bundle installs the release it was built for. **The build has no
+  network: a bundle built before its release is on PyPI packs fine and fails at the user's
+  `uv sync`** — build from the released tag, after the publish. Nothing is vendored any more
+  (that was the pre-publication path) and `tests/test_bundle.py` forbids a `vendor/` entry. **Desktop's Linux beta
   shipped 2026-06-30** (Ubuntu 22.04+/Debian 12+, apt), so `compatibility.platforms` declares
   `linux` too — the `uv` type is cross-platform and nothing in the bundle names a platform.
   CI runs the server and the bundle build on a Linux runner; an `.mcpb` install into the Linux

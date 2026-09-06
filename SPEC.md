@@ -67,7 +67,8 @@ Searched 2026-09-01. Scope, so the negative result can be judged:
   `product reviews mcp server`, `ratings mcp server`. All zero.
 - **GitHub code**, 3 variants targeting the CR product API in a Python/MCP context. Zero.
 - **npm registry API** — nothing for `consumerreports`.
-- **PyPI** — `consumerreports-mcp`, `consumer-reports-mcp`, `consumerreports`, `mcp-consumer-reports` all 404.
+- **PyPI** — `consumerreports-mcp`, `consumer-reports-mcp`, `consumerreports`, `mcp-consumer-reports` all 404
+  at the time (this project has since taken `consumer-reports-mcp`, §9).
 - **Official MCP registry** — `consumer` returns only Gencove consumer genomics; `ratings` zero.
 
 No *published* product-ratings MCP server exists for any review publisher.
@@ -936,8 +937,8 @@ uv run consumer-reports-mcp auth --browser
 
 **Installed separately, because a browser is a heavy dependency to impose on a paste.**
 `uv sync --extra browser` adds Playwright. Absent, `--browser` exits naming that command and
-pointing at the console one-liner — never a traceback. (v1 runs from a clone, §9; if the package
-is ever published the equivalent is `pip install "consumer-reports-mcp[browser]"`.)
+pointing at the console one-liner — never a traceback. (From PyPI the equivalent is
+`uvx --from "consumer-reports-mcp[browser]" consumer-reports-mcp`, §9.)
 
 **The flow, and every step of it is a constraint:**
 
@@ -3062,21 +3063,27 @@ and the server is not, but a second entry point would be a second thing to insta
 | `consumer-reports-mcp` | Serves MCP over **stdio**. The MCP client's command. |
 | `consumer-reports-mcp auth [--browser\|--status\|--forget\|--paste-file PATH\|--timeout N]` | The session capture and its inspection (§6). `--paste-file` reads the paste from a file instead of stdin; `--timeout` bounds the `--browser` wait (default 300 s). |
 
-**Run from a clone in v1. Publishing is a later decision**, taken once the server has been built
-and used in anger. **The name is free on PyPI but not registered** (verified: the project page is
-a 404), and nothing in the design depends on which way it goes. The clone URL below resolves for
-anyone other than the owner only once the repository is public (§12):
+**Published on PyPI as `consumer-reports-mcp`** — first release 0.2.4 on 2026-09-06, through the
+trusted-publishing workflow in `.github/workflows/release.yml`. The `[browser]` extra resolves
+from the index (verified: `uvx --from "consumer-reports-mcp[browser]==0.2.4" consumer-reports-mcp
+--help` in a clean home installs Playwright 1.62.0 and serves). Publication was deferred until the
+server had been built and used in anger; nothing in the design depended on which way it went, and
+the clone-based install block collapsed to one line with no other change:
+
+```bash
+claude mcp add consumer-reports -- uvx consumer-reports-mcp
+# with the in-conversation sign-in (Playwright), the extra rides on the package spec:
+claude mcp add consumer-reports -- uvx --from "consumer-reports-mcp[browser]" consumer-reports-mcp
+uvx consumer-reports-mcp auth              # capture a session (optional — anonymous works)
+```
+
+Development runs from a clone. **The registration command takes the path from the shell, never
+from this document** — an earlier draft hardcoded one machine's home directory:
 
 ```bash
 git clone https://github.com/Averyy/consumer-reports-mcp && cd consumer-reports-mcp && uv sync
-uv run consumer-reports-mcp auth           # capture a session (optional — anonymous works)
 claude mcp add consumer-reports -- uv --directory "$PWD" run consumer-reports-mcp
 ```
-
-**The registration command takes the path from the shell, never from this document.** An earlier
-draft hardcoded one machine's home directory. `$PWD` is the fix for a clone-based install, and if
-the package is later published the whole block collapses to
-`claude mcp add consumer-reports -- uvx consumer-reports-mcp` with no other change.
 
 ### Claude Desktop bundle (`.mcpb`)
 
@@ -3092,9 +3099,15 @@ the reason for each line of it:
   dependency specification.** So the bundle's `pyproject.toml` depends on
   `consumer-reports-mcp[browser]` and declares no extras of its own: Desktop users get Playwright
   and `cr_sign_in` works; PyPI users installing the server itself stay lean.
-- **PyPI publication has not happened**, so the build vendors the server's source tree into the
-  bundle (`vendor/consumer-reports-mcp/`) and `[tool.uv.sources]` points uv at that path. The
-  one-line switch to a pinned release is commented in `bundle/pyproject.toml`.
+- **The server is a pinned PyPI dependency, and the pin is generated.** `bundle/pyproject.toml`
+  depends on `consumer-reports-mcp[browser]==0`; the `==0` is a placeholder like the wrapper's
+  `version = "0"`, and `scripts/build_bundle.py` stamps the root version over both — refusing a
+  wrapper that lacks either placeholder — so a bundle always installs the release it was built
+  for. Desktop's `uv sync` resolves the pin from PyPI at install time and the build has no
+  network, so the bundle is built from the released tag *after* the publish: built before it,
+  it packs fine and fails at the user's `uv sync`. Before publication the build vendored the
+  source tree and `[tool.uv.sources]` pointed uv at it; that path is gone, and the test suite
+  forbids a `vendor/` entry in the artifact so it cannot come back unnoticed.
 - **The manifest's `version` is generated from `pyproject.toml`, never typed.** The template
   carries no version — a template with one is refused — and the `tools` list is generated from
   `server.DESCRIPTIONS` for the same reason. This is the `__init__.py` version-drift bug, kept
@@ -3389,8 +3402,8 @@ HttpOnly, expiry) and the re-mint transcript. Those moved to **`notes/auth-recon
 
 ## 13. Decisions taken
 
-- **Name: `consumer-reports-mcp`**, matching the directory on disk. Free — and unregistered —
-  on PyPI and npm.
+- **Name: `consumer-reports-mcp`**, matching the directory on disk. Free on both PyPI and npm
+  when chosen; registered on PyPI by this project on 2026-09-06 (§9).
   `cr-mcp` was taken on npm by an unrelated *code review* MCP, and "CR" reads as code-review
   in MCP circles. Earlier drafts said `consumerreports-mcp` — the hyphenated form wins, and
   package name, cache dir, config dir and both §9 entry points all use it.

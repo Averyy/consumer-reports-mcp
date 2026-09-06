@@ -73,13 +73,19 @@ git clone https://github.com/Averyy/consumer-reports-mcp && cd consumer-reports-
 uv run scripts/build_bundle.py      # → dist/consumer-reports-mcp-<version>.mcpb — double-click it
 ```
 
-Desktop brings its own `uv`, installs the server inside the bundle and starts it.
+Desktop brings its own `uv`, installs the pinned release from PyPI inside the bundle and starts it.
 
-**Claude Code**, or any stdio MCP client:
+**Claude Code**, or any stdio MCP client — the package is on PyPI:
 
 ```bash
-git clone https://github.com/Averyy/consumer-reports-mcp && cd consumer-reports-mcp && uv sync
-claude mcp add consumer-reports -- uv --directory "$PWD" run consumer-reports-mcp
+claude mcp add consumer-reports -- uvx consumer-reports-mcp
+```
+
+For the in-conversation sign-in, which needs Playwright, register it with the `[browser]` extra
+instead:
+
+```bash
+claude mcp add consumer-reports -- uvx --from "consumer-reports-mcp[browser]" consumer-reports-mcp
 ```
 
 No account needed to start.
@@ -97,9 +103,9 @@ is ticked, which is what makes the session last a year instead of days, verifies
 one real request, stores it, and starts using it with no restart. Claude polls `cr_auth_status` for
 the result.
 
-The tool isn't read-only, so your client asks before running it. In Claude Code add the browser
-extra first (`uv sync --extra browser`, then restart the MCP server). From a terminal the same flow
-is `uv run consumer-reports-mcp auth --browser`.
+The tool isn't read-only, so your client asks before running it. In Claude Code register the
+server with the `[browser]` extra (the second `claude mcp add` above). From a terminal the same
+flow is `uvx --from "consumer-reports-mcp[browser]" consumer-reports-mcp auth --browser`.
 
 ### Pasting a cookie
 
@@ -112,7 +118,7 @@ document.cookie.match(/(?:^|;\s*)hash=([^;]*)/)[1]
 
 First time, Chrome and Firefox make you type `allow pasting` before they accept that line. It
 prints a 36-character token. Right-click it, **Copy string contents**, then run
-`uv run consumer-reports-mcp auth` and paste. It's verified against one real request before saving.
+`uvx consumer-reports-mcp auth` and paste. It's verified against one real request before saving.
 
 `CR_SESSION_COOKIE=hash=…` works too, and is the Desktop bundle's optional "Session cookie"
 setting. It writes nothing to disk and wins over the stored file, so `cr_sign_in` refuses while

@@ -1,5 +1,6 @@
 """The Claude Desktop bundle (SPEC §9 *Claude Desktop bundle*): a generated manifest whose
-version comes from pyproject.toml, vendored source, no secrets, and no network."""
+version comes from pyproject.toml, a dependency pinned to that same release, nothing vendored,
+no secrets, and no network."""
 
 from __future__ import annotations
 
@@ -62,13 +63,11 @@ def test_bundle_pyproject_puts_the_browser_extra_on_the_dependency():
     so the extra must be spelled on the dependency for Desktop users to get Playwright."""
     text = (BUNDLE / "pyproject.toml").read_text(encoding="utf-8")
     data = tomllib.loads(text)
-    assert data["project"]["dependencies"] == ["consumer-reports-mcp[browser]"]
+    # `==0` is a placeholder the build stamps, like `version = "0"` below
+    assert data["project"]["dependencies"] == ["consumer-reports-mcp[browser]==0"]
     assert "optional-dependencies" not in data["project"]
-    assert data["tool"]["uv"]["sources"]["consumer-reports-mcp"] == {
-        "path": "vendor/consumer-reports-mcp"
-    }
+    assert "tool" not in data  # no [tool.uv.sources]: the release comes from PyPI, nothing vendored
     assert "build-system" not in data  # a virtual project: uv installs its dependencies only
-    assert "AFTER PUBLICATION" in text and "==<version>" in text  # the documented switch
     assert data["project"]["version"] == "0"  # the wrapper's own number is a placeholder…
 
 
@@ -81,31 +80,26 @@ def test_build_generates_the_version_and_packs_a_self_contained_bundle(tmp_path)
         names = set(zf.namelist())
         manifest = json.loads(zf.read("manifest.json"))
         wrapper = tomllib.loads(zf.read("pyproject.toml").decode("utf-8"))
-        vendored = tomllib.loads(
-            zf.read("vendor/consumer-reports-mcp/pyproject.toml").decode("utf-8")
-        )
     assert manifest["version"] == version and manifest["manifest_version"] == "0.4"
     assert sorted(t["name"] for t in manifest["tools"]) == sorted(DESCRIPTIONS)
     assert {t["name"]: t["description"] for t in manifest["tools"]} == DESCRIPTIONS
     assert wrapper["project"]["version"] == version  # …stamped with the real one at build time
-    assert vendored["project"]["version"] == version
-    assert {
-        "manifest.json",
-        "pyproject.toml",
-        "README.md",
-        ".mcpbignore",
-        "src/server.py",
-        "vendor/consumer-reports-mcp/pyproject.toml",
-        "vendor/consumer-reports-mcp/README.md",
-        "vendor/consumer-reports-mcp/LICENSE",
-        "vendor/consumer-reports-mcp/src/consumer_reports_mcp/server.py",
-        "vendor/consumer-reports-mcp/src/consumer_reports_mcp/auth_tools.py",
-        "vendor/consumer-reports-mcp/src/consumer_reports_mcp/cars/tools.py",
-    } <= names
-    # nothing that is not the server ships: no caches, no tests, no captures, no credentials
-    for forbidden in ("__pycache__", ".pyc", ".venv", "tests/", "scratch/", "session.json", ".db"):
+    # …and the dependency pins that same release, so the bundle installs what it was built for
+    assert wrapper["project"]["dependencies"] == [f"consumer-reports-mcp[browser]=={version}"]
+    assert {"manifest.json", "pyproject.toml", "README.md", ".mcpbignore", "src/server.py"} <= names
+    # nothing that is not the wrapper ships: no caches, no tests, no captures, no credentials —
+    # and no vendored source tree, which is how the bundle shipped before PyPI publication
+    for forbidden in (
+        "__pycache__",
+        ".pyc",
+        ".venv",
+        "tests/",
+        "scratch/",
+        "session.json",
+        ".db",
+        "vendor/",
+    ):
         assert not any(forbidden in n for n in names), forbidden
-    assert not any(n.startswith("vendor/consumer-reports-mcp/scripts") for n in names)
     # building twice is idempotent (the staging dir is rebuilt, not appended to)
     again = mod.build(out_dir=tmp_path)
     with zipfile.ZipFile(again) as zf:
@@ -118,6 +112,21 @@ def test_a_template_with_a_version_is_refused():
         mod.render_manifest({"version": "9.9.9"}, "0.0.1", [])
     rendered = mod.render_manifest({"name": "x"}, "0.0.1", [{"name": "t", "description": "d"}])
     assert rendered["version"] == "0.0.1" and rendered["tools"][0]["name"] == "t"
+
+
+def test_a_wrapper_missing_either_placeholder_is_refused():
+    """Unstamped, the bundle would carry a wrong version or an unpinned dependency — and install."""
+    mod = _build_module()
+    both = 'version = "0"\ndependencies = ["consumer-reports-mcp[browser]==0"]\n'
+    assert (
+        mod.stamp_wrapper(both, "1.2.3")
+        == 'version = "1.2.3"\ndependencies = ["consumer-reports-mcp[browser]==1.2.3"]\n'
+    )
+    unpinned = 'version = "0"\ndependencies = ["consumer-reports-mcp[browser]"]\n'
+    versioned = 'version = "1.0"\ndependencies = ["consumer-reports-mcp[browser]==0"]\n'
+    for broken in (unpinned, versioned):
+        with pytest.raises(SystemExit, match="placeholder"):
+            mod.stamp_wrapper(broken, "1.2.3")
 
 
 def test_shim_serves_through_the_cli_entry_point():
