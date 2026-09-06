@@ -1,0 +1,78 @@
+name: Release
+
+# Publishes to PyPI when a v<major>.<minor>.<patch> tag is pushed, via TRUSTED PUBLISHING —
+# GitHub mints a short-lived OIDC token for the run and PyPI verifies it against a publisher
+# it already knows. No API token is stored anywhere: not in the repository, not in a secret,
+# not on a laptop. That is why `publish` is a separate job with `id-token: write` and an
+# environment, and why `build` runs with `contents: read` and no token permission at all —
+# nothing able to publish ever runs in the same job as the code being built.
+#
+# One-time setup before the first tag (SPEC §9):
+#   1. PyPI -> Publishing -> "Add a new pending publisher": owner `Averyy`, repository
+#      `consumer-reports-mcp`, workflow `release.yml`, environment `pypi`. A PENDING publisher
+#      can be registered before the project exists, which is what makes the FIRST release
+#      tokenless too — otherwise it is the one release that needs a manual upload.
+#   2. GitHub -> Settings -> Environments -> New environment -> `pypi`.
+#
+# Then a release is: bump the version, commit, `git tag vX.Y.Z && git push --tags`.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build sdist and wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      # A tag disagreeing with pyproject.toml publishes a version nobody can reproduce from
+      # the tag, and PyPI files are immutable — the bad version can only be yanked, never
+      # replaced. Cheaper to refuse here than to burn a version number.
+      - name: tag matches pyproject version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(uv version --short)"
+          echo "tag=$tag pyproject=$pkg"
+          test "$tag" = "$pkg"
+
+      - run: uv sync --extra dev --extra browser
+      - run: uv run ruff check src/ tests/ scripts/
+      - run: uv run pytest tests/ -x -q
+
+      # --no-sources ignores [tool.uv.sources], so this builds what a PyPI consumer would
+      # resolve rather than what the local checkout wires up.
+      - run: uv build --no-sources
+
+      - name: artifacts carry no captures or credentials
+        run: uv run python scripts/check_artifacts.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: uv publish --trusted-publishing always

@@ -1,11 +1,12 @@
 # consumer-reports-mcp
 
 MCP server exposing a Consumer Reports member's own subscription as structured ratings tools.
-Open source (MIT), Python 3.12+. **Intended to be public; the GitHub repository is PRIVATE as
-of 2026-09-06** (`gh repo view` → `visibility: PRIVATE`), so every
-`github.com/Averyy/consumer-reports-mcp` URL in the README, `pyproject.toml` and the bundle
-manifest 404s for anyone but the owner until it is flipped. Flipping it exposes the full history
-and is the owner's decision alone — never run `gh repo edit --visibility` from an agent.
+Public, open source (MIT), Python 3.12+ — `github.com/Averyy/consumer-reports-mcp`, public
+since 2026-09-06. The history was squashed to a single commit before the flip: 20 of the
+36 commits carried Consumer Reports' member-facing scores that `2da9a38` had redacted from
+the tree but not from history, against SPEC §12's own rule. **Visibility is the owner's
+decision alone — never run `gh repo edit --visibility` from an agent**, and the same goes for
+anything that publishes (a tag, a release, `uv publish`).
 
 - `SPEC.md` — design of record. Read before proposing anything structural.
 - `RECON.md` — measured facts about CR's payload, paywall and auth. Cite it; don't re-derive it.

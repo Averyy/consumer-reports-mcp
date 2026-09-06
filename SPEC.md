@@ -44,8 +44,8 @@ that gap.
 
 ## 3. Non-goals
 
-- **Not a hosted service.** The code is open source and meant to be public (§13; the repository
-  is private as of 2026-09-06, §12), but each user runs it locally against their own membership.
+- **Not a hosted service.** The code is open source and public (§13; public since 2026-09-06,
+  §12), but each user runs it locally against their own membership.
   No shared server, no redistribution of any cache.
 - **Paid content stays paid.** The server reads what the user's own session is entitled to and
   nothing else. It never solves a CAPTCHA, never automates login, and never stores a password
@@ -3331,9 +3331,11 @@ input to the code.
 
 This is written as a public repository that reads a paid subscription's gated content using a
 credential the user pastes in. None of that is unusual for a personal tool, and all of it is worth
-stating plainly rather than leaving implicit. (The repository itself is **private as of
-2026-09-06** — `gh repo view` reports `visibility: PRIVATE` — so the rules in this section are
-what the tree must already satisfy the moment it is flipped, since a flip exposes every commit.)
+stating plainly rather than leaving implicit. (The repository is **public since 2026-09-06**.
+A flip exposes every commit, so the rules in this section had to hold for the whole history, not
+just the tree — they did not: 20 commits still carried the scores `2da9a38` redacted. The history
+was squashed to one commit before the flip rather than force-pushed over, since unreachable
+objects stay fetchable by SHA.)
 
 **Affiliation.** Not affiliated with, endorsed by, or connected to Consumer Reports. "Consumer
 Reports" is a trademark of Consumer Reports, Inc., used here only to name the service the tool
