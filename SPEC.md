@@ -3,9 +3,12 @@
 An MCP server that exposes a Consumer Reports **member's own** subscription as structured
 tools, so an agent can consult CR ratings the way it consults any other data source.
 
-Status: **Recon complete (2026-09-02). No code yet.** The data source, the paywall boundary, the
-auth mechanism and the auth-state marker are all confirmed against a live member session
-(`RECON.md`).
+Status: **Built, published and public (2026-09-06).** Eleven tools on two architectures (§7);
+`consumer-reports-mcp` on PyPI since 0.2.4 on 2026-09-06, the repository public the same day,
+CI green on Linux, macOS and Windows (§9). The data source, the paywall boundary, the auth
+mechanism and the auth-state marker were all confirmed against a live member session before
+anything was written (`RECON.md`), and this document is the design of record for what shipped:
+where it states a rule, the rule is the one implemented.
 
 A second round of anonymous structural checks (`RECON.md` §9h, 2026-09-02) closed several
 unknowns and corrected four things this spec had wrong: the `type` filter is a no-op, a
@@ -17,8 +20,8 @@ page rather than the reliability page.
 member steps against a live session. They corrected the auth-detection
 algorithm — CR rejects a bad credential with a redirect to a login page carrying no payload and no
 marker, not with the anonymous page this spec assumed — located the `categoryAttributes` anchor,
-and cut `cr_filters` from 36,007 tokens to 3,502. Everything else is decided; build order in
-§10.
+and cut `cr_filters` from 36,007 tokens to 3,502. Everything else is decided; §10 records the
+order it was built in.
 
 ---
 
@@ -308,6 +311,15 @@ defer until something fails. So it runs **as a background task at startup**, and
 - A lookup that misses the index **awaits the sitemap pass** rather than returning
   `unknown_category` — the wrong answer is worse than a slow one, and this is precisely the
   Televisions case (§5).
+- **That await is bounded, at `discovery.SITEMAP_AWAIT_TIMEOUT_S` (25 s).** "A slow answer beats
+  a wrong one" holds only while the caller is still listening: the pass is 195 fetches, about
+  6.5 minutes, and Claude Desktop kills a local tool call at 60 s (§9). Unbounded, a cold-start
+  lookup of any sitemap-only id was a *dead* call rather than a slow one — and the ids it hit
+  are the ones people ask for first: Televisions `c28700`, Mattresses `c28705`, Dishwashers
+  `c28687`. Bounded, the caller gets the retryable `discovery_incomplete` answer inside its
+  deadline, and because giving up on the wait never cancels the pass (`shield` keeps it running;
+  `wait_for` cancels only the wrapper), the next call resolves normally. Pinned by
+  `test_a_miss_does_not_wait_longer_than_the_client_will`.
 - While it is still running, responses carry `warnings: ["sitemap_pass_pending"]`, so a caller can
   tell "not found yet" from "not found".
 - **A pass that ends unrecorded is retried, not abandoned.** Offline at startup, `products.xml`
@@ -360,6 +372,14 @@ One fetch, cached with a long TTL. No crawling.
 (`subcats[]`), and the page carries each sibling's score range and rated count (`RECON.md` §9h).
 So one refrigerator fetch fills in the whole refrigerator family, which is what makes
 `cr_categories(family=)` answerable without extra requests (§7).
+
+**`cats[]` is not a list of category ids.** It mixes them with product-type entries whose `id`
+is a slug — `washer-dryer-pairs` on Front-Load Washers `c28739` and Electric Dryers `c30562`
+(measured 2026-09-06). An `int()` on one of those raised straight out of the cache write and the
+tool, so both categories answered nothing at all. A slug keys no category, so ingest skips it
+rather than guessing, and every other place CR content reaches `int()` in the cache layer goes
+through the same guard: CR's payload is data, and no field in it is trusted to be the type its
+name suggests.
 
 The pseudo-categories are a trap rather than a feature: `200369` is both the "31 - 33 Inch Widths"
 filter option and its own URL, but fetching that URL returns the **parent's** payload under a
@@ -521,8 +541,8 @@ challenge-detected, so its bare-403 branch rotates identity and then hands the r
 measured on wafer 0.5.0 against a local server, **3 requests and ~2 s of rotation delay under the
 anonymous policy, 1 request with a cookie** (`max_rotations=0`). The classification is the same
 under both; the anonymous policy just pays for it, and counts each toward wafer's
-`max_failures=3` (a fourth 403 in a row retires the session — harmless anonymously, there is no
-jar to lose). A `Challenged` from this host is therefore a real WAF page, never a route.
+`max_failures=3` (the third consecutive failure resets the session identity — the check is
+`count >= max_failures`, read in wafer 0.5.0 — harmless anonymously, there is no jar to lose). A `Challenged` from this host is therefore a real WAF page, never a route.
 
 #### IMPORTANT: the cars paywall is enforced in the UI, not the payload
 
@@ -892,8 +912,8 @@ What replaces it is honest and sufficient:
   captured session is expected to last about a year. That is CR's cookie policy plus a
   confirmed renewal mechanism, not a guarantee we can verify per-paste.
 - **Expiry is detected per fetch**, not predicted: `data-subscriber="false"` with a cookie
-  configured is `session_expired` (§7) — a distinct, actionable state meaning "re-run
-  `consumer-reports-mcp auth`", never silently reported as `anonymous`.
+  configured is `session_expired` (§7) — a distinct, actionable state meaning "sign in again"
+  (`cr_sign_in`, or `consumer-reports-mcp auth`), never silently reported as `anonymous`.
 
 The silent-expiry risk this was meant to address is therefore handled by detection rather than
 prediction, which is the part that was ever load-bearing.
@@ -1002,7 +1022,11 @@ pointing at the console one-liner — never a traceback. (From PyPI the equivale
    helpers with it (measured on macOS) — from the capture's `finally` and, for a loop torn down
    under the capture, from an `atexit` reaper. A pid is only ever signalled while the process
    table still shows a Playwright-profiled browser on it (the recycled-pid guard):
-   `/proc/<pid>/cmdline` on Linux, `ps -ww` where there is no procfs, `Get-CimInstance
+   `/proc/<pid>/cmdline` on Linux — and an EMPTY `cmdline` is no answer: the kernel empties it
+   for a zombie, a kernel thread and a child still inside `execve`, so it falls through to
+   `ps -ww`, which tells the three apart (`<defunct>`, `[kthread]`, the real argv once exec
+   lands); reporting `unreadable` there lost the first Linux CI run a race against a child the
+   test had just spawned — `ps -ww` where there is no procfs (macOS), `Get-CimInstance
    Win32_Process` on Windows, because `tasklist` has no command-line column and cannot see the
    profile marker. The query answers `(text, status)` — `found`, `gone`, `unreadable` or
    `query_failed:<why>` — and only `found` can match: the first CI run (2026-09-06) found
@@ -2009,10 +2033,14 @@ login-shaped page anywhere else is drift (`payload_missing`), which is at least 
 "anonymous"            if b'data-subscriber="false"' in body and no cookie was configured
 ```
 
-`credential_rejected` maps to `auth_state: "session_expired"` with `session: "expired"` — it is
-the same fact arriving by a different route, and it is **never** `payload_missing` or
-`marker_missing`. The response carries no catalogue, so unlike a marker-detected expiry it cannot
-be served as anonymous data; it falls back to the cache like any other failed fetch.
+`credential_rejected` moves `session` to `"expired"` — it is the same fact arriving by a
+different route, and it is **never** `payload_missing` or `marker_missing`. The response carries
+no catalogue, so unlike a marker-detected expiry it cannot be served as anonymous data; it falls
+back to the cache like any other failed fetch. `auth_state` then follows the served row, as
+always: a cached anonymous row answers with `auth_state: "session_expired"` (anonymous data, dead
+session — the derivation above), and with nothing cached the envelope is `error.code:
+"credential_rejected"` beside `auth_state: null` and `session: "expired"`, because there is no
+row to describe.
 
 **Only a *malformed* credential is measured.** A genuinely lapsed one may still return the
 anonymous page (`RECON.md` §5 removed cookies rather than corrupting them, and got the anonymous
@@ -2045,7 +2073,8 @@ separate pieces of CR's markup that can drift independently, and collapsing them
 would hide which half broke.
 
 `session_expired` must never be silently reported as `anonymous`. It is a distinct, actionable
-state meaning "re-run `consumer-reports-mcp auth`", and it is surfaced in the envelope.
+state meaning "sign in again" — the notice names `cr_sign_in`, then `consumer-reports-mcp auth`,
+then the env var (§6 *renewal*) — and it is surfaced in the envelope.
 
 ### Response envelope
 
@@ -2164,7 +2193,7 @@ state either: an unfiltered listing is refused before the request (§5).
 ### Envelope fields by tool
 
 Not every field is meaningful on every tool, and inventing a per-tool answer at implementation
-time is how nine tools end up with nine envelopes. `—` means the key is **omitted**, not null.
+time is how eleven tools end up with eleven envelopes. `—` means the key is **omitted**, not null.
 
 **Products:**
 
@@ -2444,7 +2473,8 @@ implementation time:
   `offset`, products beyond 200 in those categories would be unreachable by any call.
 
 - **`refresh`** (default `false`) forces a network fetch past a cache hit. Accepted by every
-  tool. For `cr_categories` and `cr_search` it refreshes **only the A-Z index** — neither ever
+  data tool (the two auth tools take none — there is no row behind them). For `cr_categories`
+  and `cr_search` it refreshes **only the A-Z index** — neither ever
   fetches a category payload, and without `refresh` the index is otherwise pinned to its
   90-day TTL with no way to update it. `cr_product(id, refresh=true)` refetches **the one
   category the selection rule chose** (§8), not every category containing that product.
@@ -2612,7 +2642,7 @@ expression listed with its reason.
 | `payload_missing` | `window.filterInstanceDATA` absent or unparseable | No — schema drift |
 | `marker_missing` | neither `data-subscriber` value present on a *category* page | No — schema drift |
 | `reliability_payload_missing` | `window.initStore` absent or unparseable | No — schema drift |
-| `credential_rejected` | CR redirected the fetch to `/ec/login` — the configured cookie was rejected (`RECON.md` §10b). Surfaced as `auth_state: "session_expired"`, never as a drift alarm | No — re-supply the cookie |
+| `credential_rejected` | CR redirected the fetch to `/ec/login` — the configured cookie was rejected (`RECON.md` §10b). Surfaced as `session: "expired"`; `auth_state` follows the served row — `session_expired` when a cached anonymous row answers, `null` when nothing is cached and this code is the error — and never as a drift alarm | No — re-supply the cookie |
 | `filter_on_unavailable_attribute` | Filtered on an attribute whose values are all null in the served payload; carries `reason: "unavailable"` \| `"absent"` (§7) | No — sign in, or CR has none |
 | `unknown_car` | `cr_car` on a model-year id the cars API does not know: a `403`/`404` (no such route), **or a `200` whose `response` is `{}` with `responseSummary.responseCount == 0`** — measured 2026-09-04, and the usual answer for an unknown id. No other status qualifies; a `429`/`400` is `challenged`/`fetch_failed`. An id that is not a key any row can carry (`cache.row_id`, as for `unknown_product`) is answered here without a request | No |
 
@@ -2654,9 +2684,11 @@ false` with `brands: []` — and having both meant the same condition could be a
 error, with `data` populated alongside a non-null `error` in violation of the rule below. A
 category CR runs no survey on is not a failure.
 
-**`session_expired` names the path it can be fixed on**: "re-run `consumer-reports-mcp auth`" for
-a stored session, "update `CR_SESSION_COOKIE`" for the env-var path. Telling a container user to
-run a CLI that writes a file the server will not read is a dead end.
+**`session_expired` names the path it can be fixed on**: `cr_sign_in` first, then
+`consumer-reports-mcp auth`, then "update `CR_SESSION_COOKIE` if the cookie came from there"
+(§6 *renewal*; the text is `envelope.EXPIRED_FIX_TEMPLATE`, appended to the `data.notice`).
+Telling a container user to run a CLI that writes a file the server will not read is a dead end,
+and telling a Desktop user to open a terminal is another.
 
 `payload_missing` and `marker_missing` are the schema-drift alarms: they mean CR moved
 something, and they must be loud rather than degrading into an empty result set.
@@ -2722,8 +2754,10 @@ misleading about what broke.
 **Cache-first means expiry can go unnoticed.** With a 30-day TTL and no live fetch, a session
 can lapse without any tool noticing, so "`session_expired` is never silently reported" holds
 only for calls that actually touch the network. This is accepted — the cached data was
-correctly labelled `member` when fetched and stays true — but it means `auth` is the only
-reliable way to check session health on demand.
+correctly labelled `member` when fetched and stays true — but it means a probe fetch is the only
+way to check session health on demand: `consumer-reports-mcp auth`, or `cr_sign_in` on an
+`unverified` cookie, which runs the same probe before deciding whether to open a window (§6).
+`cr_auth_status` reports what this process has recorded, without a request.
 
 **Retries happen in wafer and nowhere else.** By the time an error reaches a tool, wafer has
 already exhausted its budget, so the server never re-issues the request itself — layered
@@ -3131,7 +3165,7 @@ optimisation: it keeps request volume near zero.
   on failure — would put a rollback path inside `Transport.adopt()` and would still need a
   separate branch for the CLI, which has no main session to borrow. Validating before adopting is
   also the safer order: nothing is stored or adopted until a real member marker is seen.
-- `mcp >= 2` for the server — **`MCPServer`, imported from `mcp.server.mcpserver`**, with
+- **`mcp>=2,<3`** for the server — **`MCPServer`, imported from `mcp.server.mcpserver`**, with
   `outputSchema` declared on every tool (§7). Earlier drafts of this spec said "FastMCP"; that
   class was renamed in the 2.x SDK and `mcp.server.fastmcp` **no longer exists** (verified against
   `mcp==2.1.1`, the current release), so the old name is an import error rather than a style
@@ -3175,6 +3209,19 @@ from this document** — an earlier draft hardcoded one machine's home directory
 git clone https://github.com/Averyy/consumer-reports-mcp && cd consumer-reports-mcp && uv sync
 claude mcp add consumer-reports -- uv --directory "$PWD" run consumer-reports-mcp
 ```
+
+**Two workflows, both green on Linux, macOS and Windows runners (2026-09-06).**
+`.github/workflows/ci.yml` runs on every push: `ruff check`, `ruff format --check`, the offline
+suite, the bundle build, and — in a second job on a real installed Chrome, no CR traffic — the
+browser-teardown measurements §6 relies on (`tests/live/test_browser_hardware.py`, headed under
+Xvfb on Linux). Three platforms because two claims in §6 can only be measured on the OS they are
+about, and the first run found two of them wrong (the Linux `ps` truncation and the Windows
+`None`). `.github/workflows/release.yml` publishes on a `vX.Y.Z` tag through **trusted
+publishing** — GitHub mints a short-lived OIDC token and PyPI verifies it, so no API token is
+stored anywhere; the job with `id-token: write` is separate from the one that builds, and the
+build refuses a tag that disagrees with `pyproject.toml` (PyPI files are immutable, so a wrong
+version can only be yanked), builds with `--no-sources`, and runs `scripts/check_artifacts.py`
+so an sdist or wheel carrying a capture or a credential never reaches the index.
 
 ### Claude Desktop bundle (`.mcpb`)
 
@@ -3252,10 +3299,13 @@ limiter — holds across concurrent callers (§8 *Concurrency*).
 
 ## 10. Build order
 
-Recon on **CR** is done (`RECON.md`). Recon on **our client** is not, so three spikes come first.
-An earlier draft said "everything ships together, nothing is deferred"; that was true of the
-tool surface and false of the unknowns, and it would have had the auth module written against
-inferred wafer behaviour.
+**Everything in this section has shipped** (first PyPI release 2026-09-06, §9). It is kept as
+the record of the order and the reasoning behind it, which is why it still reads as a plan.
+
+Recon on **CR** was done first (`RECON.md`). Recon on **our client** was not, so three spikes
+came before any module. An earlier draft said "everything ships together, nothing is deferred";
+that was true of the tool surface and false of the unknowns, and it would have had the auth
+module written against inferred wafer behaviour.
 
 ### Spikes — run 2026-09-03
 
@@ -3539,7 +3589,7 @@ HttpOnly, expiry) and the re-mint transcript. Those moved to **`notes/auth-recon
   data that is both anonymous and not derivable from the category payload** (§7). It is the
   only tool on the second envelope, deliberately isolated.
 - **No AskCR passthrough.** The structured data is good enough that a prose-answer tool
-  earns nothing. Nine structured tools, no chatbot proxy.
+  earns nothing. Nine structured data tools, no chatbot proxy.
 - **`cr_compare` dropped.** With the whole category cached locally it was `cr_product`
   called N times wearing a costume. `cr_filters` added in its place — the taxonomy is
   per-category and not guessable.

@@ -1,11 +1,13 @@
 # PLAN.md — implementation plan for consumer-reports-mcp
 
 > **Historical.** This is the plan the code was built from (written 2026-09-03, before any code
-> existed; the last task was checked off 2026-09-05). It is kept because module docstrings and
-> tests cite its task ids (`PLAN P2.2`, `P10.3`, …) and because §6 records the spec gaps the
-> plan surfaced. It is not maintained as a description of the shipped server — `SPEC.md` is the
-> design of record and `CLAUDE.md` the binding rules; where this file and they disagree, they
-> win. Excluded from the sdist.
+> existed; every phase task was checked off by 2026-09-05). It is kept because module docstrings
+> and tests cite its task ids (`PLAN P2.2`, `P10.3`, …) and because §6 records the spec gaps the
+> plan surfaced. It is not maintained as a description of the shipped server — counts, commands
+> and checkboxes below are as they stood when written (the plan says "nine tools"; `cr_sign_in`
+> and `cr_auth_status` later made it eleven, and the §5 checklist is left as it was, open items
+> included). `SPEC.md` is the design of record and `CLAUDE.md` the binding rules; where this file
+> and they disagree, they win. Excluded from the sdist.
 
 Design of record: `SPEC.md`. Evidence: `RECON.md`. Binding rules: `CLAUDE.md`. This file does
 not restate them; it says what to build, in what order, and how to prove each piece works.
@@ -21,10 +23,11 @@ green at every step of the order.
 ## 0. Orientation
 
 **What.** A Python 3.12+ MCP server (stdio) that exposes Consumer Reports ratings as nine
-structured tools, cache-first over SQLite, with an anonymous first-class tier and an optional
-member tier unlocked by a session cookie the user pastes in. Plus a `consumer-reports-mcp auth`
-CLI (`--status`, `--forget`). When this was written zero lines of code existed; recon and three
-spikes were done (`RECON.md` §10) and their results were already in the spec.
+structured tools (the count when this was written; eleven shipped, see the header), cache-first
+over SQLite, with an anonymous first-class tier and an optional member tier unlocked by a
+session cookie the user pastes in. Plus a `consumer-reports-mcp auth` CLI (`--status`,
+`--forget`). When this was written zero lines of code existed; recon and three spikes were done
+(`RECON.md` §10) and their results were already in the spec.
 
 **Two surfaces, nothing shared between them** (SPEC §5, §7, RECON §11a):
 

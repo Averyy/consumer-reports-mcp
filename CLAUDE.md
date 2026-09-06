@@ -2,9 +2,11 @@
 
 MCP server exposing a Consumer Reports member's own subscription as structured ratings tools.
 Public, open source (MIT), Python 3.12+ — `github.com/Averyy/consumer-reports-mcp`, public
-since 2026-09-06. The history was squashed to a single commit before the flip: 20 of the
-36 commits carried Consumer Reports' member-facing scores that `2da9a38` had redacted from
-the tree but not from history, against SPEC §12's own rule. **Visibility is the owner's
+since 2026-09-06 and on PyPI as `consumer-reports-mcp` (first release 0.2.4, the same day, via
+`release.yml`'s tag-triggered trusted publishing — no stored token anywhere). The history was
+squashed to a single commit before the flip: 20 of the 36 commits carried Consumer Reports'
+member-facing scores that `2da9a38` had redacted from the tree but not from history, against
+SPEC §12's own rule. **Visibility is the owner's
 decision alone — never run `gh repo edit --visibility` from an agent**, and the same goes for
 anything that publishes (a tag, a release, `uv publish`).
 
@@ -22,7 +24,10 @@ per category, no api-key, no pagination.
   categories exist, the index lists 236, and 110 are missing from it** (0 the other way, so the
   sitemap union is a strict superset). Omissions include **TVs `c28700` (303 products)**,
   **Mattresses `c28705` (293)**, Bluetooth Speakers (178), Humidifiers (121), High Chairs,
-  Homeowners insurance. Discovery is TWO passes: the A-Z index
+  Homeowners insurance, and **Dishwashers `c28687`** (measured 2026-09-06) — so in a fresh
+  process a staple category is unreachable until the background pass lands: the miss AWAITS
+  the pass (below), and under Claude Desktop's 60 s kill that is a dead tool call, not an
+  answer, for the first minutes. Discovery is TWO passes: the A-Z index
   (`/cro/a-to-z-index/products/index.htm`, one fetch, the only source of display names) **plus**
   the sitemaps — `/sitemaps/products.xml` then its 195 `/products/sitemap/{scid}` XML files.
   Record `source` per row; `unknown_category` is only correct once both have run.
@@ -34,7 +39,13 @@ per category, no api-key, no pagination.
   Only a sitemap-sourced id that 404s is retired; an A-Z id that 404s is `payload_missing`.
 - **The sitemap pass runs in the BACKGROUND at startup** (195 fetches ≈ 6.5 min). Fetch the A-Z
   index synchronously first; a lookup that misses it **awaits** the pass rather than answering
-  `unknown_category`, and warns `sitemap_pass_pending` meanwhile. **A pass that ends UNRECORDED
+  `unknown_category`, and warns `sitemap_pass_pending` meanwhile. **That await is BOUNDED at
+  `SITEMAP_AWAIT_TIMEOUT_S` (25 s)** — the pass is ~6.5 min and Claude Desktop kills a local
+  tool call at 60 s, so an unbounded await made a cold-start lookup of any sitemap-only id a
+  DEAD tool call instead of the retryable `discovery_incomplete` the design promises, and the
+  ids it hit are the ones people ask for: TVs `c28700`, Mattresses `c28705`, Dishwashers
+  `c28687`. Giving up on the wait never cancels the pass — `shield` keeps it running and
+  `wait_for` cancels only the wrapper — so the next call resolves. **A pass that ends UNRECORDED
   (offline at startup, `products.xml` failing twice, three consecutive challenges) is retried by
   the next miss** — after a `REFRESH_COOLDOWN_S` (300 s) cooldown, only once the A-Z source is
   authoritative, and only as a RETRY (the lifespan launches; a miss awaits or retries, so a miss
@@ -257,6 +268,17 @@ per category, no api-key, no pagination.
   non-integer `model_year_id` became a `-1` that cost a real `modelYears/-1` request. The same
   `isdigit()`-then-`int()` parse sat under `group` (and under `_groupId` on CR's own payload):
   both now go through `normalize.as_int`, which never raises.
+- **IMPORTANT: CR's OWN content is the other direction of the same sweep — nothing CR ships
+  reaches a bare `int()`.** `args.cats[]` mixes category ids with PRODUCT-TYPE entries whose
+  `id` is a SLUG (`washer-dryer-pairs`); `_enrich_family`'s `int(c["id"])` raised inside
+  `cache.write_category`, inside the single-flight task, and out through the tool — Front-Load
+  Washers `c28739` and Electric Dryers `c30562` answered a `ValueError`, not an envelope, for
+  every caller on every call (`cr_filters`/`cr_product` on them failed the same way), found
+  2026-09-06 by an ordinary laundry question. Four sites in `cache.py` now go through
+  `ingest._int` (None, never a raise): `args.cats[].id` for `typeURL` and `reliabilityURL`,
+  `family[].id`, `_row_contains` over CR's product ids, and `upsert_category_index`, where one
+  malformed row aborted the whole index write. The caller-junk sweep above never audited this
+  side because the payload was trusted to keep its own promise.
 - **Warnings vocabulary** (all machine-readable, in `warnings[]`): `sitemap_pass_pending`,
   `empty_category`, `attribute_dictionary_missing`, **`ungrouped_products:<n>`** (products CR
   ships without a `_groupId`: `group: null`, `rank: null`, sorted after every group, and in
@@ -497,7 +519,11 @@ per category, no api-key, no pagination.
   Playwright-profiled browser on that pid — `/proc/<pid>/cmdline` on Linux, `ps -ww` where
   there is no procfs, `Get-CimInstance Win32_Process` on Windows since `tasklist` has no
   command-line column; `powershell` 5.1, never `pwsh`), and an `atexit` reaper covers a loop
-  torn down under the capture. **IMPORTANT: `ps` needs `-ww`, and the query answers a
+  torn down under the capture. **An EMPTY `/proc/<pid>/cmdline` is not a verdict — it falls
+  through to `ps -ww`** (2026-09-06): the kernel empties it for three unrelated states — a
+  zombie, a kernel thread AND a process mid-exec — and `ps` tells them apart (`<defunct>`,
+  `[kthread]`, the real argv); read as "no marker", an empty cmdline would have meant `gone`
+  for a browser that was still there. **IMPORTANT: `ps` needs `-ww`, and the query answers a
   STATUS, never a bare None.** The first CI run (2026-09-06) measured the guard's first
   spelling on the two platforms it had only been reasoned about: on ubuntu-latest procps cut
   the piped line at 80 columns — a real Chrome came back as `/opt/google/chrome/chrome
@@ -651,7 +677,9 @@ per category, no api-key, no pagination.
 - **The envelope is 8 keys**: `auth_state`, `session`, `scores_available`, `provenance`
   (`data_tier`, `fetched_at`, `cr_url`, `from_cache`, `stale`, `superseded_at`), `sort`,
   `warnings`, `error`, `data`. Provenance is grouped so it does not bury `data`. **Every tool
-  wears the outer `{session, warnings, error, data}` — the two auth tools included**: their
+  wears the outer `{session, warnings, error, data}` — the two auth tools included** (the one
+  exception is `cr_reliability`, which OMITS `session` and pins `auth_state` to `"anonymous"`,
+  above — one tier, so there is no credential to describe): the auth tools'
   status object sits under `data` and `error` is always null there. An earlier draft made
   `cr_sign_in`/`cr_auth_status` flat, which contradicted SPEC §7's own table and made
   `session_expiring` structurally impossible on a tool that carries `session`.

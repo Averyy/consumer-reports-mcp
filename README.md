@@ -170,10 +170,11 @@ CR names: `appliances`, `home-garden`, `electronics-computers`, `health`, `money
 The seventh, `cars`, holds six product categories that live under a `/cars/` path: tires, dash
 cams, tire stores, electric scooters and so on. Those are products. Vehicles have their own tools.
 
-CR's own A-Z index lists only 236 of the categories. It omits Televisions, Mattresses, Bluetooth
-Speakers and 107 others, so the server reads CR's sitemaps as well. That pass runs in the
-background at startup, and a lookup that misses the index waits for it. A pass that failed, say
-from being offline at startup, is retried by the next such lookup once the network is back.
+CR's own A-Z index lists only 236 of the categories. It omits Televisions, Mattresses,
+Dishwashers, Bluetooth Speakers and 106 others, so the server reads CR's sitemaps as well. That
+pass runs in the background at startup, and a lookup that misses the index waits for it. A pass
+that failed, say from being offline at startup, is retried by the next such lookup once the
+network is back.
 
 Category at a time, on demand, cached locally.
 

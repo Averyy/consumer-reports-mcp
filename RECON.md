@@ -22,7 +22,8 @@ Per product (16 keys): `index`, `id`, `productGroupHierarchy`, `price`, `_price`
 `expertRatings`, `surveys`, `attrs`, `_groupId`, `_groupName`, `_shoppingParsed`.
 
 `args` also carries `scid`/`cid` and a `cats[]` array of sibling categories with `typeURL` and
-`reliabilityURL` — a second discovery path alongside the A-Z index.
+`reliabilityURL` — a second discovery path alongside the A-Z index. Not every `cats[]` entry
+is a category: some carry a slug where the others carry an id (§9h, measured 2026-09-06).
 
 ### Envelope universality — 11 categories
 
@@ -600,6 +601,16 @@ label, not a filter — selecting it is a no-op. Product-*type* scoping is not d
 This is the axis that keeps microwaves out of a refrigerator search, and it is free on every
 category fetch.
 
+> **`cats[]` MIXES category ids with product-type entries whose `id` is a SLUG (measured
+> 2026-09-06).** Front-Load Washers `c28739` and Electric Dryers `c30562` both ship a `cats[]`
+> entry with `id: "washer-dryer-pairs"` beside the numeric siblings. So `id` is not always a
+> `cNNNN` number, and a family parser that does `int(id)` raises on CR's own content: both
+> categories answered a bare `ValueError` instead of an envelope, for every caller on every
+> call (`cr_ratings`, `cr_filters` and `cr_product` alike), until non-numeric ids were skipped
+> (`ingest._int` → `None`; a slug keys no category and is never guessed at). The numeric
+> siblings on the same page are kept. This was the first case of CR's *own* payload, rather
+> than caller input, reaching an `int()` unguarded.
+
 ### `categories` option ids ARE `_groupId`
 
 | Category | `categories` options | distinct `_groupId` | identical |
@@ -1094,9 +1105,10 @@ catalogue.** Confirmed missing, each serving a completely normal `filterInstance
 | **Mattresses** | `c28705` | **293** | 3 | **no** |
 | Tablets | `c34387` | 38 | 2 | **no** |
 | Sound bars | `c28698` | — | — | **no** |
+| Dishwashers | `c28687` | — | — | **no** (confirmed 2026-09-06) |
 
-Televisions and mattresses are among CR's best-known ratings. A search of the index for
-`televis`, `speaker`, `tablet` and `watch` returns **zero** hits, and `mattress` returns only
+Televisions, mattresses and dishwashers are among CR's best-known ratings. A search of the index
+for `televis`, `speaker`, `tablet` and `watch` returns **zero** hits, and `mattress` returns only
 "Mattress Stores" — a services category, not the mattresses themselves.
 
 **The full crawl was run 2026-09-03 — all 195 sitemaps, 0 failures. The answer is 346

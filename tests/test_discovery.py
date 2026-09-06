@@ -184,6 +184,46 @@ async def test_sitemap_pass_runs_once_per_process(tmp_path):
     await disc3.await_sitemap_pass()
 
 
+async def test_a_miss_does_not_wait_longer_than_the_client_will(tmp_path, monkeypatch):
+    """A miss awaits the sitemap pass — but the pass is ~6.5 minutes and Claude Desktop kills a
+    local tool call at 60 s, so unbounded it was a dead call for exactly the ids the pass exists
+    to find (TVs, Mattresses, Dishwashers are all sitemap-only). Bounded, the caller gets the
+    retryable `discovery_incomplete` answer inside its deadline.
+
+    Giving up on the wait must NOT cancel the pass: it keeps running, so the next lookup
+    resolves."""
+    import consumer_reports_mcp.discovery as D
+
+    disc, cache, sess = _runtime(tmp_path)
+    await disc.ensure_az_index(now=T0)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def never_finishes() -> None:
+        started.set()
+        await release.wait()
+
+    disc._sitemap_task = asyncio.create_task(never_finishes())
+    await started.wait()
+    assert disc.sitemap_pending is True  # derived from the task, not set
+
+    monkeypatch.setattr(D, "SITEMAP_AWAIT_TIMEOUT_S", 0.05)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    res = await disc.resolve("c28700")  # TVs: sitemap-only, so a miss in the A-Z index
+    elapsed = loop.time() - t0
+
+    assert res.kind == "unknown"
+    assert elapsed < 5, f"resolve waited {elapsed:.1f}s — the bound did not apply"
+    assert disc.warnings() == ["sitemap_pass_pending"]  # not found YET, not "not found"
+    assert not disc._sitemap_task.done(), "giving up on the wait cancelled the pass"
+
+    release.set()
+    await disc._sitemap_task
+    assert disc._sitemap_task.done()
+
+
 async def test_az_fetch_failure_is_not_fatal(tmp_path):
     disc, cache, sess = _runtime(tmp_path)
     sess.routes.clear()

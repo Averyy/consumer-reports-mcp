@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# A miss AWAITS the sitemap pass (SPEC §5) — but the pass is 195 fetches, about 6.5 minutes,
+# and Claude Desktop kills a local tool call at 60 s. Unbounded, a cold-start lookup of any of
+# the 110 sitemap-only ids — TVs c28700, Mattresses c28705, Dishwashers c28687, the ones people
+# actually ask for — was a dead tool call rather than the retryable `discovery_incomplete` the
+# design promises. Bounded, the caller gets that answer inside its deadline and the pass keeps
+# running, so the next call (or a retry) resolves. Well under 60 s so a slow fetch and the
+# response still fit.
+SITEMAP_AWAIT_TIMEOUT_S = 25.0
+
 SOURCE_AZ = "az"
 SOURCE_SITEMAP = "sitemap"
 
@@ -388,13 +397,22 @@ class Discovery:
         except Exception:
             pass
 
-    async def await_sitemap_pass(self) -> None:
+    async def await_sitemap_pass(self, timeout: float | None = None) -> bool:
+        """Wait for the running pass. False when `timeout` elapsed first and it is still going.
+
+        The wait is bounded because the caller is a tool call with a deadline; the PASS is not
+        cancelled by giving up on it — `shield` keeps it running, and `wait_for` cancels only
+        the wrapper — so the work continues and the next lookup finds it done."""
         task = self._sitemap_task
-        if task is not None and not task.done():
-            try:
-                await asyncio.shield(task)
-            except Exception:
-                pass
+        if task is None or task.done():
+            return True
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout)
+        except TimeoutError:
+            return False
+        except Exception:
+            pass
+        return True
 
     # --- resolution ----------------------------------------------------------------------
     async def resolve(self, token: Any, *, now: datetime | None = None) -> Resolution:
@@ -414,7 +432,8 @@ class Discovery:
         if self.sitemap_done():
             return res
         if self.sitemap_pending:
-            await self.await_sitemap_pass()
+            if not await self.await_sitemap_pass(SITEMAP_AWAIT_TIMEOUT_S):
+                return res  # still running: `discovery_incomplete`, retryable, pass still going
         elif self._sitemap_task is not None and self.az_done():
             # a pass ran in this process and ended unrecorded: retry it (subject to the
             # cooldown) rather than answer `discovery_incomplete` for the rest of the process.
@@ -424,7 +443,8 @@ class Discovery:
             # answer is `fetch_failed` regardless, and 195 more requests would not change it
             if self.start_background_sitemap_pass() is None:
                 return res
-            await self.await_sitemap_pass()
+            if not await self.await_sitemap_pass(SITEMAP_AWAIT_TIMEOUT_S):
+                return res
         else:
             return res
         return self.cache.resolve_category(token)

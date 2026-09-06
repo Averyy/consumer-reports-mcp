@@ -351,8 +351,10 @@ each line:
   was built for and the pin never drifts. The build needs no network to do this, which is a
   trap: Desktop's `uv sync` resolves the pin from PyPI on the user's machine, so a bundle built
   before its release is live packs fine and fails on install. Build from the released tag,
-  after the publish. Before the package is on PyPI at all, vendor the source into the bundle at
-  build time and point `[tool.uv.sources]` at the path instead.
+  after the publish. (Until the first release exists, the only way to exercise the bundle is
+  to vendor the source at build time and point `[tool.uv.sources]` at the path; this project
+  did that before publication and removed it once the package was live — a vendoring path
+  left in afterwards is a second thing that can drift from the release.)
 - **Generate the manifest's `version` from `pyproject.toml`. Never type it.** Keep the
   checked-in manifest without a version and have the build script refuse one that has it. Do the
   same for the `tools` list, from wherever your tool descriptions live. A version typed in two
@@ -446,11 +448,19 @@ The tools
       decode raised on a non-ASCII username) and spawned with `CREATE_NO_WINDOW`. Then
       MEASURE it: a GitHub Actions Windows runner is a real Windows machine with Chrome
       installed, so the branch that "needs a machine" needs a workflow file. The first run
-      of that workflow earned its keep on both platforms nobody had run it on: Linux `ps`
-      cuts a piped line at 80 columns (`-ww`, or read `/proc/<pid>/cmdline`), so the guard
-      had never matched a real Chrome there; and the Windows query came back as one bare
-      None for three different reasons — have it answer a status (gone, unreadable, failed)
-      so a guard that never fires can say why. The heavy import runs off the loop.
+      of that workflow earned its keep on both platforms nobody had run it on. Linux `ps`
+      cuts a piped line at 80 columns, so the guard had never matched a real Chrome there:
+      read `/proc/<pid>/cmdline` first (the kernel's own argv, exact and unbounded, no
+      subprocess; a gone pid is `ENOENT`) and fall through to `ps -ww` when it is EMPTY —
+      the kernel empties it for a zombie, a kernel thread and a process still inside
+      `execve`, and reporting all three as unreadable broke the guard on a child the test
+      had just spawned, a race `ps` never lost because spawning it cost the milliseconds
+      the exec needed. The Windows query came back as one bare None for three different
+      reasons — have the query answer `(text, status)` with `found`, `gone`, `unreadable`
+      or `query_failed:<why>` so a guard that never fires can say which, and ship the
+      PowerShell as `-EncodedCommand` (base64 UTF-16LE) so no quoting rule between your
+      process spawner and PowerShell's own parser can touch it. The heavy import runs off
+      the loop.
 - [ ] `auth_status` with a long-poll capped under the client's tool-call limit (45 s for a 60 s
       cap, re-measured on the client build you target); returns immediately when idle.
 - [ ] Both wear the server's ordinary outer envelope with the status object under `data`; typed
