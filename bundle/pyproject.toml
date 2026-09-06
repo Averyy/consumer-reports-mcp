@@ -1,0 +1,30 @@
+# The Claude Desktop bundle project (SPEC §9 *Claude Desktop bundle*).
+#
+# Desktop downloads its own `uv`, runs plain `uv sync` in this directory, then starts the server
+# with `uv run --directory <this dir> consumer-reports-mcp` (manifest.json → mcp_config).
+#
+# `uv sync` does NOT install this project's own extras — but extras named inside a dependency
+# specification are installed normally. That is why `[browser]` is spelled on the dependency
+# below rather than declared as an extra here: Desktop users get Playwright (the in-conversation
+# sign-in needs it), while people installing the server itself from PyPI stay lean.
+
+[project]
+name = "consumer-reports-mcp-bundle"
+# The wrapper has no version of its own: scripts/build_bundle.py stamps the server's version
+# from the root pyproject.toml here and into manifest.json, so nothing is typed twice.
+version = "0"
+description = "Claude Desktop bundle wrapper for consumer-reports-mcp"
+requires-python = ">=3.12"
+dependencies = ["consumer-reports-mcp[browser]"]
+
+[tool.uv.sources]
+# TODAY — the server is not on PyPI yet. scripts/build_bundle.py vendors the server's source
+# tree into the bundle, and this line points uv at it.
+consumer-reports-mcp = { path = "vendor/consumer-reports-mcp" }
+# AFTER PUBLICATION — the one-line switch: delete the `[tool.uv.sources]` entry above, drop the
+# `vendor()` step in scripts/build_bundle.py, and pin the release on the dependency instead:
+#
+#     dependencies = ["consumer-reports-mcp[browser]==<version>"]
+#
+# (build_bundle.py can write that pin from the root pyproject.toml exactly as it writes the
+# manifest version, so the pin never drifts either.)

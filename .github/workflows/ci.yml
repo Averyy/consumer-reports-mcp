@@ -1,0 +1,66 @@
+name: CI
+
+# Two jobs, both on Windows, macOS and Linux runners, because two claims in SPEC §6 and §9 can
+# only be measured on the OS they are about:
+#
+# * `test` — lint, the offline suite and the bundle build. On Windows this runs
+#   `test_kill_browser_guard_reads_the_real_process_table` against a REAL `Get-CimInstance
+#   Win32_Process` query, so the Windows branch of `browser_auth._command_line` is measured, not
+#   pinned by a fake `subprocess.run`.
+# * `browser` — `tests/live/test_browser_hardware.py` on a real installed Chrome (every runner
+#   image ships Google Chrome; `browser_auth` launches `channel="chrome"`, nothing is
+#   downloaded): the pid guard through the real process table, `kill_browser` with the real
+#   `os.kill` taking the browser and its helpers down, and a Python process killed mid-capture
+#   leaving no browser behind (Playwright's driver exit hook: `SIGKILL` of the process group on
+#   POSIX, `taskkill /T /F` on Windows). No Consumer Reports traffic — the window opens on
+#   `about:blank`. Linux is headed under Xvfb; Windows and macOS runners run headed directly.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: lint, tests, bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev --extra browser
+      - run: uv run ruff check src/ tests/ scripts/
+      - run: uv run pytest tests/ -x -q
+      - run: uv run scripts/build_bundle.py
+
+  browser:
+    name: real-browser measurements (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CR_BROWSER_LIVE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev --extra browser
+      - name: real Chrome under Xvfb
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a uv run pytest tests/live/test_browser_hardware.py -q -rs
+      - name: real Chrome, headed
+        if: runner.os != 'Linux'
+        run: uv run pytest tests/live/test_browser_hardware.py -q -rs

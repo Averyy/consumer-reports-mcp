@@ -1,0 +1,44 @@
+{
+  "manifest_version": "0.4",
+  "name": "consumer-reports-mcp",
+  "display_name": "Consumer Reports",
+  "description": "Consumer Reports ratings as structured tools, using your own membership. Works without one.",
+  "long_description": "Ratings, reliability, prices and specs for 346 Consumer Reports product categories and 7,095 car model-years, read straight from CR's own pages and API into typed tool results. Works immediately without an account: prices, specs, reliability surveys, CR Recommended and within-group ranking are public; Overall Scores are null until you connect your membership. To connect it, just ask — a browser window opens on CR's own sign-in page, you sign in there, and the server keeps only the resulting session cookie. It never sees or stores your password.",
+  "author": {
+    "name": "Avery Levitt",
+    "url": "https://github.com/Averyy"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Averyy/consumer-reports-mcp"
+  },
+  "homepage": "https://github.com/Averyy/consumer-reports-mcp",
+  "documentation": "https://github.com/Averyy/consumer-reports-mcp#readme",
+  "support": "https://github.com/Averyy/consumer-reports-mcp/issues",
+  "license": "MIT",
+  "keywords": ["consumer reports", "ratings", "reviews", "reliability", "cars", "appliances"],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "consumer-reports-mcp"],
+      "env": {
+        "CR_SESSION_COOKIE": "${user_config.session_cookie}"
+      }
+    }
+  },
+  "tools_generated": false,
+  "user_config": {
+    "session_cookie": {
+      "type": "string",
+      "title": "Session cookie (optional)",
+      "description": "Leave this empty and ask Claude to connect your membership instead: a browser window opens on Consumer Reports' own sign-in page and the server keeps only the session cookie. Fill it in only if no browser window can open on this machine — paste the 36-character `hash` cookie from a signed-in browser. Anything set here overrides what the in-conversation sign-in stores.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  }
+}

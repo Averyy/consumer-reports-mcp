@@ -1,0 +1,6 @@
+# Read by `mcpb pack` if the staged bundle is ever packed with the official CLI instead of
+# scripts/build_bundle.py (which applies the same exclusions itself).
+.venv/
+uv.lock
+__pycache__/
+*.pyc

@@ -1,0 +1,64 @@
+# --- Session / credentials — NEVER commit ---
+session.json
+.env
+.env.*
+!.env.example
+*.cookie
+cookies.txt
+curl.txt
+
+# --- Recon & browser-automation scratch (captured against a live member session) ---
+.playwright-mcp/
+scratch/
+tmp/
+*.har
+
+# --- Cache / local data ---
+cr.db*
+*.db
+*.sqlite
+*.sqlite3
+.cache/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.python-version
+
+# --- Tooling ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# --- Editors / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+.claude/settings.local.json
+# review-agent scratch notes, not project docs
+.claude/agent-memory/
+.codex-dobby/
+
+# --- Private working notes (auth recon detail, per SPEC §12) ---
+notes/
+
+# --- MCP / editor config that can hold env secrets ---
+.mcp.json
+.claude/settings.json

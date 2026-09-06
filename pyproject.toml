@@ -1,0 +1,79 @@
+[project]
+name = "consumer-reports-mcp"
+version = "0.2.0"
+description = "MCP server exposing a Consumer Reports member's own subscription as structured ratings tools"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Avery Levitt" }]
+requires-python = ">=3.12"
+keywords = ["mcp", "consumer-reports", "ratings", "reviews", "reliability", "cars", "appliances"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Typing :: Typed",
+]
+dependencies = [
+    "mcp>=2,<3",
+    # The transport rules (CLAUDE.md *HTTP*) are SEMANTICS measured on 0.4.9 and 0.5.0 — rotation
+    # empties the jar, a JSON 403 is returned, `__aexit__` is the only teardown — and wafer is
+    # pre-1.0, so a minor is where they would move. tests/test_transport.py pins this range to the
+    # prose and to the installed version; widen it only after re-measuring.
+    "wafer-py>=0.4.9,<0.6",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6"]
+browser = ["playwright>=1.40,<2"]
+
+[project.scripts]
+consumer-reports-mcp = "consumer_reports_mcp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Averyy/consumer-reports-mcp"
+Repository = "https://github.com/Averyy/consumer-reports-mcp"
+Issues = "https://github.com/Averyy/consumer-reports-mcp/issues"
+Changelog = "https://github.com/Averyy/consumer-reports-mcp/releases"
+
+[build-system]
+requires = ["hatchling>=1.27"]  # PEP 639 `license = "MIT"` + `license-files`
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/consumer_reports_mcp"]
+
+[tool.hatch.build.targets.sdist]
+# The sdist is the package plus what reproduces its tests — not the working repo. Hatchling
+# already honours .gitignore (scratch/, notes/, session.json never ship); this keeps the
+# lockfile, the CI config and the docs no test reads out of the tarball too. SPEC.md and
+# CLAUDE.md stay: test_envelope, test_server and test_cars_tools pin the code to them.
+exclude = [
+    ".github/",
+    "uv.lock",
+    "PLAN.md",
+    "RECON.md",
+    "MCP-AUTH-PATTERN.md",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/build_fixtures.py" = ["E501"]  # generated-data rows read better on one line
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["error"]
