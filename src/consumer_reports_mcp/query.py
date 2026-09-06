@@ -7,6 +7,7 @@ both tiers, always; a cross-group score sort is honoured and labelled, never ref
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -144,7 +145,26 @@ def resolve_group(fi: dict, value: Any) -> int:
         "invalid_filter_value",
         f"group {E.quoted(value)} is not a display group of this category; legal values: {legal}",
         filter="group",
+        candidates=E.candidates({"id": g, "name": n} for g, n in known.items()),
     )
+
+
+def near_matches(wanted: Any, names: Mapping[int, str]) -> list[dict[str, Any]]:
+    """`[{id, name}]` for the names that contain the caller's token or are contained by it,
+    after `_norm` — the rule `cr_cars` uses for `make`. The whole legal set of brands or
+    attributes can run to dozens, and `candidates` is capped at 12 without a count of what
+    was left out, so a truncated full list would read as the legal set when it is a twelfth
+    of it; the near matches are what an agent can act on, and `cr_filters` is the structured
+    home of the complete list. An empty token is near nothing."""
+    token = _norm(wanted)
+    if not token:
+        return []
+    out = []
+    for key, name in names.items():
+        n = _norm(name)
+        if n and (token in n or n in token):
+            out.append({"id": key, "name": name})
+    return sorted(out, key=lambda c: (c["name"], c["id"]))
 
 
 def resolve_brands(fi: dict, values: list[Any]) -> set[int]:
@@ -181,11 +201,15 @@ def resolve_brands(fi: dict, values: list[Any]) -> set[int]:
         else:
             unknown.append(v)
     if unknown:
+        near: list[dict[str, Any]] = []
+        for v in unknown:
+            near += [c for c in near_matches(v, by_id) if c not in near]
         raise QueryError(
             "invalid_filter_value",
             f"unknown brand(s) {E.quoted_list(unknown)} for this category; call cr_filters for "
             "the legal list",
             filter="brands",
+            candidates=E.candidates(near),
         )
     return out
 
@@ -217,10 +241,16 @@ def resolve_attribute(
             filter=filter_name,
             candidates=E.candidates(sorted(hits)),
         )
+    names = {d.id: d.name or "" for d in defs.values()}
+    near = near_matches(key, names)
+    for d in defs.values():  # a display name is a second name for the same id
+        if d.display_name and d.display_name != d.name and d.id not in {c["id"] for c in near}:
+            near += near_matches(key, {d.id: d.display_name})
     raise QueryError(
         "unknown_filter",
         f"attribute {E.quoted(key)} is not defined for this category; call cr_filters for the list",
         filter=filter_name,
+        candidates=E.candidates(near),
     )
 
 
@@ -415,12 +445,14 @@ def order_products(
             "invalid_filter_value",
             f"sort must be one of {SORT_KEYS}, not {E.quoted(sort)}",
             filter="sort",
+            candidates=E.legal_values(SORT_KEYS),
         )
     if order not in ORDERS:
         raise QueryError(
             "invalid_filter_value",
             f"order must be asc or desc, not {E.quoted(order)}",
             filter="order",
+            candidates=E.legal_values(ORDERS),
         )
     # "multi-group" is a property of the products being ORDERED: a group-filtered result is one
     # population and stays within_group on `_overallSortIndex` (SPEC §7). A product without a
@@ -533,6 +565,7 @@ def validate_paging(limit: int | None, offset: int, *, detail: str) -> None:
             "invalid_filter_value",
             f"offset must be a non-negative integer, not {E.quoted(offset)}",
             filter="offset",
+            candidates=E.legal_range(0, None),
         )
     if limit is None:
         return
@@ -542,6 +575,7 @@ def validate_paging(limit: int | None, offset: int, *, detail: str) -> None:
             "invalid_filter_value",
             f"limit must be a positive integer, not {E.quoted(limit)}",
             filter="limit",
+            candidates=E.legal_range(1, cap),
         )
     if limit > cap:
         raise QueryError(
@@ -553,6 +587,7 @@ def validate_paging(limit: int | None, offset: int, *, detail: str) -> None:
                 else ""
             ),
             filter="limit",
+            candidates=E.legal_range(1, cap),
         )
 
 
@@ -574,6 +609,7 @@ def page(items: list[Any], limit: int, offset: int) -> tuple[list[Any], int, boo
             "invalid_filter_value",
             f"offset must be a non-negative integer, not {E.quoted(offset)}",
             filter="offset",
+            candidates=E.legal_range(0, None),
         )
     total = len(items)
     sliced = items[offset : offset + limit]

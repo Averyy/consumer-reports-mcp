@@ -1886,12 +1886,25 @@ envelope: a field that describes the served row is null when nothing was served,
 `session` alone carries the credential's health (`session_expired` is not lost — it is
 `session: "expired"` on the same envelope). An error envelope that *did* serve a row —
 `unknown_product` against a cached category, a filter rejected after the fetch — reports that
-row's tier and its provenance, as before. The key is still required and the enum still in the
-`outputSchema` (`anyOf` with `null`); `cr_reliability` still pins the literal `"anonymous"`, and
-cars still omit the key (below) — three surfaces, one rule: **`auth_state` is never invented
-from the session**. `null` means "no row to describe", omitted means "not a concept on this
-surface". `tests/test_boundaries.py` walks every `E.*Envelope(auth_state=)` construction and
-accepts only `E.auth_state(...)`, `None`, or reliability's literal.
+row's tier **and its provenance**, as a success does. The two travel together or not at all:
+a row real enough to name a tier is real enough to say where it came from, how old it is and
+whether it was cached, so `auth_state: "member"` beside `provenance: null` — member data from
+nowhere, of no age — is not a state the envelope can be in. It shipped once: `cr_ratings`' error
+path took the served row's tier and hard-coded `provenance: null`, so every `sort`/`order`/
+`group` error after the fetch made that claim (measured 2026-09-06). Now `RowEnvelope`, the base
+of the three products envelopes, refuses the split at construction in both directions, and the
+error path is built from the served row itself — a caller who mistyped `sort` still learns the
+category was served from the cache, when, and from which URL. (The row's own warnings ride
+along too — `attribute_dictionary_missing` is exactly what an `unknown_filter` on `features`
+is about.) `cr_reliability`'s `reliability_payload_missing` over a cached row does the same with
+`ReliabilityProvenance`: its `cr_url` is the URL that landed elsewhere, which is the diagnostic.
+The key is still required and the enum still in the `outputSchema` (`anyOf` with `null`);
+`cr_reliability` still pins the literal `"anonymous"`, and cars still omit the key (below) —
+three surfaces, one rule: **`auth_state` is never invented from the session**. `null` means "no
+row to describe", omitted means "not a concept on this surface". `tests/test_boundaries.py`
+walks every `E.*Envelope(auth_state=)` construction and accepts only `E.auth_state(...)`,
+`None`, or reliability's literal — and checks the `provenance=` beside it is null exactly when
+`auth_state=` is.
 
 **`session_expired` is an `auth_state`, not an error.** It also appears in the error taxonomy
 below, and the two must not both fire. The rule: a fetch that *succeeds* but comes back logged
@@ -2115,7 +2128,7 @@ time is how nine tools end up with nine envelopes. `—` means the key is **omit
 | `session` | ✓ | ✓ | ✓ | — | ✓ | ✓ |
 | `scores_available` | ✓ | ✓ | ✓ | survey keys only (§7) | — | — |
 | `sort` | ✓ | — | — | — | — | — |
-| `provenance` | ✓ | ✓ | ✓ | ✓ (no `superseded_at`) | index fetch | index fetch |
+| `provenance` | ✓ (null exactly when `auth_state` is, §7) | ✓ (same) | ✓ (same) | ✓ (no `superseded_at`) | index fetch | index fetch |
 | `warnings` / `error` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 **Cars:**
@@ -2455,13 +2468,45 @@ applies — every field optional, so an agent reads the ones it understands and 
   "http_status": 429,               // when a status caused it
   "title": "…",                     // the <title> of an unexpected page; never its body
   "candidates": [{"id": 28978, "name": "Refrigerators"}],  // legal values, when they are knowable —
-                                    // a list of objects whose keys fit the parameter: `{id, name}`
-                                    // for a category, `{min, max}` for `cr_cars` `year`'s range,
-                                    // `{id, slug, name, group_id, group}` for a display-group id
+                                    // ALWAYS a list of objects whose keys fit the parameter, in
+                                    // one of three shapes (below); never a bare scalar, and
+                                    // never only in the prose
   "filter": "attributes",           // WHICH parameter was wrong — the caller's name for it
   "attribute": "…"                  // the attribute a filter error is about
 }
 ```
+
+**`candidates` carries the legal set wherever the site knows it, in one of three shapes, and
+the prose beside it is never the only machine-readable source.** Measured 2026-09-06: of the
+`invalid_filter_value` sites only `year` populated it — `car_type` listed seven legal slugs in
+the message with `candidates: null`, and `group` put the legal names *and their ids* in the
+prose (`'24-Inch' (33347)`) while the structured field designed for exactly that stood empty.
+That contradicts the project's own rule that these are structural fields, not prose. The shapes,
+each with one constructor so the key is the same on both surfaces:
+
+| Shape | Constructor | Parameters |
+|---|---|---|
+| `[{"value": v}, …]` — a closed vocabulary, keyed by the word the caller passes | `envelope.legal_values` | `detail` (all four tools that take it), `sort`, `order`, `group_mode`, `state` |
+| `[{"min": lo, "max": hi}]` — a numeric span, the one entry IS the legal set; an open bound is `null` | `envelope.legal_range` | `year` (both the local check and CR's translated `400`, the span known), `limit` (`1`–the cap for that `detail`, both surfaces), `offset` (`0`–`null`) |
+| `[{id, name}, …]`-style rows — CR's vocabulary, with the key the caller passes and the name they will recognise | `envelope.candidates` over the rows | `group` `{id, name}`; a cars `category` under a type `{id, name}`; `car_type` `{id, slug, name}`; `make` `{slug, name}`; `family` `{id, name}` (both refusals, once a family is known); `ambiguous_*` ids `{id}`; the display-group hint `{id, slug, name, group_id, group}` |
+
+Two vocabularies are offered as **near matches, not the full set**: `brands` and an unknown
+attribute (`features=`/`attributes=`, `unknown_filter`), like `make` on cars — names that
+contain the caller's token or are contained by it, `{id, name}`. The complete legal set runs
+to dozens on a real category, and `candidates` is capped at 12 without a count of what was
+left out (below), so a truncated full list would read as the legal set when it is a twelfth
+of it; `cr_filters` is the structured home of the complete list, and the message says so. No
+near match is `candidates: null`, never `[]`.
+
+Sites that legitimately offer nothing: `query` (its legal set is a length, not values — the
+message carries the limit); the boolean and numeric `features` value-shape errors (`true`/
+`false`, a number or `[min, max]` — a type, not a vocabulary); `brands` given a non-list and
+`features` given a non-object (the same); a cars `category` that is not an integer, or one
+passed without `car_type` (the fix is a companion parameter, not a value); the unfiltered
+`cr_cars` refusal (`car_type` is the parameter to *add*); `make` and `year` with no index yet
+(nothing known to offer; the message points at `cr_car_search`); `unknown_category` for an
+ordinary miss (346 categories; `cr_search` is the tool); `unknown_product`; every transport
+and drift code.
 
 **`reason`, `retryable` and `http_status` are projected from a transport failure by one
 function, `transport.failure_fields`, and its code by `transport.failure_code`.** Every site

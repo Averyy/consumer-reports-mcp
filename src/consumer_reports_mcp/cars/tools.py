@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+CARS_DETAILS = ("summary", "standard")  # `cr_cars`: road-test scores cost a request per row
+CAR_DETAILS = ("standard", "full")  # `cr_car`
+
 
 def _transport_error(exc: FetchFailed | Challenged) -> E.ToolError:
     """Nothing cached, so the failure IS the answer: the products path's `_fallback` shape,
@@ -145,6 +148,7 @@ def _resolve_cars_limit(limit: int | None, detail: str) -> int:
             "invalid_filter_value",
             f"limit must be a positive integer, not {E.quoted(limit)}",
             filter="limit",
+            candidates=E.legal_range(1, cap),
         )
     if limit > cap:
         raise CarsQueryError(
@@ -152,6 +156,7 @@ def _resolve_cars_limit(limit: int | None, detail: str) -> int:
             f"limit {limit} exceeds the cap of {cap} for detail={E.quoted(detail)}"
             + (" — road-test scores cost one request per car" if detail == "standard" else ""),
             filter="limit",
+            candidates=E.legal_range(1, cap),
         )
     return limit
 
@@ -179,13 +184,14 @@ async def cr_cars(
     offset: int = 0,
     refresh: bool = False,
 ) -> E.CarsEnvelope:
-    if detail not in ("summary", "standard"):
+    if detail not in CARS_DETAILS:
         return _cars_error(
             rt,
             E.ToolError(
                 code="invalid_filter_value",
                 message="detail must be summary or standard",
                 filter="detail",
+                candidates=E.legal_values(CARS_DETAILS),
             ),
         )
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -195,6 +201,7 @@ async def cr_cars(
                 code="invalid_filter_value",
                 message="offset must be a non-negative integer",
                 filter="offset",
+                candidates=E.legal_range(0, None),
             ),
         )
     warnings: list[str] = []
@@ -321,7 +328,7 @@ def _now_iso(rt: Runtime) -> str:
 async def cr_car(
     rt: Runtime, model_year_id: int, detail: str = "standard", refresh: bool = False
 ) -> E.CarEnvelope:
-    if detail not in ("standard", "full"):
+    if detail not in CAR_DETAILS:
         return E.CarEnvelope(
             session=_session(rt),
             scores_available=None,
@@ -331,6 +338,7 @@ async def cr_car(
                 code="invalid_filter_value",
                 message="detail must be standard or full",
                 filter="detail",
+                candidates=E.legal_values(CAR_DETAILS),
             ),
             data=None,
         )

@@ -195,8 +195,10 @@ def index_is_stale(rt: Runtime) -> bool:
     return from_iso(status["fetched_at"]) <= rt.clock() - _days(rt.settings.index_ttl_days)
 
 
-def known_make_slugs(rt: Runtime) -> set[str]:
-    return set(rt.cache.car_make_slugs())
+def known_makes(rt: Runtime) -> dict[str, str | None]:
+    """slug → CR's make name, from the index: the legal `make` vocabulary with the name an
+    agent will recognise beside the slug it must pass (`{"slug": "mini", "name": "MINI"}`)."""
+    return {m["slug"]: m["name"] for m in rt.cache.car_makes()}
 
 
 async def ensure_taxonomy(rt: Runtime, *, refresh: bool = False) -> tuple[dict, str, bool]:
@@ -242,7 +244,7 @@ __all__ = [
     "ensure_car_index",
     "ensure_taxonomy",
     "index_is_stale",
-    "known_make_slugs",
+    "known_makes",
     "parse_car_types",
     "parse_keys",
     "resolve_car_type",

@@ -135,6 +135,25 @@ async def test_payload_that_does_not_describe_the_category_is_drift(tmp_path, re
     out = await cr_reliability(h.rt, 4242)
     assert out.error is not None and out.error.code == "reliability_payload_missing"
     assert h.rt.cache.select_reliability(4242, 30, h.now) is None  # never fanned out under it
+    assert out.provenance is None  # the repository refused it before any row: nothing served
+
+
+async def test_drift_found_in_a_served_row_keeps_its_provenance(tmp_path, reliability_fixture):
+    """The tool's own guard — a CACHED row whose payload does not describe the category — has a
+    row in hand, so its provenance rides on the error as on the products tools (SPEC §7):
+    `cr_url` is the URL that landed elsewhere, which is the diagnostic. `auth_state` stays the
+    pinned literal; this surface derives nothing from a row."""
+    h = RuntimeHarness(tmp_path)
+    h.rt.cache.upsert_category_index(
+        [{"id": 4242, "path": "/appliances/other/c4242/"}], "sitemap", h.now
+    )
+    other = WWW + "/appliances/other/reliability/c4242/"
+    h.rt.cache.write_reliability([4242], reliability_fixture["init_store"], h.now, other)
+    out = await cr_reliability(h.rt, 4242)
+    assert out.error is not None and out.error.code == "reliability_payload_missing"
+    assert out.provenance is not None and out.provenance.cr_url == other
+    assert out.provenance.from_cache is True and out.auth_state == "anonymous"
+    assert out.data is None and out.scores_available is None and h.requests == []
 
 
 async def test_drift_code_is_reliability_payload_missing(tmp_path):
@@ -157,3 +176,11 @@ async def test_methodology_and_full_detail(tmp_path, reliability_fixture):
     assert "predicted_reliability_100" not in std.model_dump()["data"]["brands"][0]
     bad = await cr_reliability(h.rt, 37162, detail="everything")
     assert bad.error.code == "invalid_filter_value"
+
+
+async def test_reliability_detail_error_carries_the_legal_values(tmp_path):
+    h = RuntimeHarness(tmp_path)
+    out = await cr_reliability(h.rt, 37162, detail="summary")
+    assert out.error.code == "invalid_filter_value" and out.error.filter == "detail"
+    assert out.error.candidates == [{"value": "standard"}, {"value": "full"}]
+    assert out.provenance is None and h.requests == []  # no row: no provenance, no request

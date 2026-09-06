@@ -17,7 +17,7 @@ from consumer_reports_mcp.cars.repository import (
     list_cars,
 )
 from consumer_reports_mcp.cars.tools import cr_car, cr_cars
-from consumer_reports_mcp.config import CARS_API, CARS_PAGE_URL
+from consumer_reports_mcp.config import CARS_API, CARS_LIMIT_SUMMARY_MAX, CARS_PAGE_URL
 from consumer_reports_mcp.transport import FetchFailed
 from tests.conftest import FakeResponse, RuntimeHarness, json_response, load_fixture, make_car_page
 
@@ -214,6 +214,10 @@ async def test_unknown_make_is_an_error_once_the_index_exists(tmp_path):
     )
     bad = await cr_cars(h.rt, make="Make Z")
     assert bad.error.code == "invalid_filter_value" and bad.error.filter == "make"
+    assert bad.error.candidates is None  # nothing near `make-z`; the message points at the tool
+    near = await cr_cars(h.rt, make="Make")
+    assert near.error.filter == "make" and "did you mean" in near.error.message
+    assert near.error.candidates == [{"slug": "make-a", "name": "Make A"}]  # slug AND CR's name
     ok = await cr_cars(h.rt, make="make a")
     assert ok.error is None
 
@@ -673,3 +677,76 @@ async def test_cars_filter_errors_quote_caller_text_bounded(tmp_path):
     out = await cr_cars(h.rt, make="M" * 200_000)
     assert out.error.filter == "make" and len(out.error.message) < 400
     assert out.error.candidates is None
+
+
+async def test_cars_invalid_filter_value_carries_the_legal_set_in_candidates(tmp_path):
+    """The cars surface, same rule (SPEC §7 *Error taxonomy*): `car_type` was seven legal slugs
+    in the prose with `candidates: null`; now `{id, slug, name}` rows from the taxonomy,
+    `{id, name}` for a category under a type, `{value}` for `state`/`detail`, `{min, max}` for
+    `limit`/`offset`/`year`. No listing request is spent on any of them."""
+    h = CarsHarness(tmp_path)
+    types = await cr_cars(h.rt, car_type="suv")
+    assert types.error.filter == "car_type" and types.error.candidates == [
+        {"id": 105, "slug": "sedans", "name": "Sedans & Hatchbacks"},
+        {"id": 107, "slug": "hybrids-evs", "name": "Hybrids/EVs"},
+    ]
+    cat = await cr_cars(h.rt, car_type="sedans", category=99999)
+    assert cat.error.filter == "category" and cat.error.candidates == [
+        {"id": 11331, "name": "Small sedans"},
+        {"id": 11359, "name": "Electric sedans"},
+    ]
+    # a category that is not an id, or one with no `car_type` to scope it, has no legal set
+    # to offer under `filter: "category"` — the fix is a companion parameter, not a value
+    for kwargs in ({"car_type": "sedans", "category": "abc"}, {"category": 11359}):
+        out = await cr_cars(h.rt, **kwargs)
+        assert out.error.filter == "category" and out.error.candidates is None, kwargs
+    state = await cr_cars(h.rt, make="Make A", state="certified")
+    assert state.error.filter == "state" and state.error.candidates == [
+        {"value": "new"},
+        {"value": "used"},
+    ]
+    detail = await cr_cars(h.rt, make="Make A", detail="full")
+    assert detail.error.candidates == [{"value": "summary"}, {"value": "standard"}]
+    for kwargs, span in (
+        ({"detail": "standard", "limit": 16}, {"min": 1, "max": 15}),
+        ({"limit": 0}, {"min": 1, "max": CARS_LIMIT_SUMMARY_MAX}),
+    ):
+        out = await cr_cars(h.rt, make="Make A", **kwargs)
+        assert out.error.filter == "limit" and out.error.candidates == [span], kwargs
+    offset = await cr_cars(h.rt, make="Make A", offset=-1)
+    assert offset.error.filter == "offset" and offset.error.candidates == [{"min": 0, "max": None}]
+    # the unfiltered refusal names no value at all: `car_type` is the parameter to ADD
+    none = await cr_cars(h.rt, year=2020)
+    assert none.error.filter == "car_type" and none.error.candidates is None
+    assert h.api_requests("/v2/cr/cars?") == []
+    car = await cr_car(h.rt, 700001, detail="summary")
+    assert car.error.filter == "detail" and car.error.candidates == [
+        {"value": "standard"},
+        {"value": "full"},
+    ]
+    assert car.provenance is None and h.api_requests("modelYears") == []
+
+
+async def test_cars_year_that_is_not_a_year_offers_the_span_once_known(tmp_path):
+    """`year="soon"` is the same `filter: "year"` error as 1990, so it carries the same
+    `{min, max}` — once the index has been fetched; before that there is no span to offer."""
+    h = CarsHarness(tmp_path)
+    cold = await cr_cars(h.rt, make="Make A", year="soon")
+    assert cold.error.filter == "year" and cold.error.candidates is None
+    h.rt.cache.write_car_index(
+        [
+            {
+                "model_year_id": i,
+                "make": "Make A",
+                "slug_make": "make-a",
+                "year": y,
+                "states": [],
+                "car_types": [],
+            }
+            for i, y in ((1, 2000), (2, 2028))
+        ],
+        h.rt.clock(),
+    )
+    warm = await cr_cars(h.rt, make="Make A", year="soon")
+    assert warm.error.filter == "year" and warm.error.candidates == [{"min": 2000, "max": 2028}]
+    assert h.api_requests("/v2/cr/cars?") == []

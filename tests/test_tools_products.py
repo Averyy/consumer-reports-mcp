@@ -352,6 +352,11 @@ async def test_no_row_error_has_null_auth_state_never_a_guess(tmp_path, c37162):
 
 
 async def test_filter_error_keeps_served_tier_in_auth_state(tmp_path, c37162):
+    """A filter rejected AFTER the fetch has a row in hand, and the error envelope describes
+    it like a success does: its tier, AND its provenance — `auth_state: "member"` beside
+    `provenance: null` asserted member data from nowhere, of no age (SPEC §7; `E.RowEnvelope`
+    now refuses the split). A caller who mistyped `sort` still learns the category was served
+    from the cache, when, and from where."""
     h = RuntimeHarness(tmp_path, cookie=True)
     h.rt.cache.write_category(
         fixture_envelope(c37162, fill_scores=True), tier="member", scored=True, fetched_at=h.now
@@ -360,6 +365,88 @@ async def test_filter_error_keeps_served_tier_in_auth_state(tmp_path, c37162):
     out = await cr_ratings(h.rt, 37162, brands=["Nobody"])
     assert out.error.code == "invalid_filter_value" and out.auth_state == "member"
     assert out.session == "expired"
+    assert out.provenance is not None and out.provenance.data_tier == "member"
+    assert out.provenance.from_cache is True and out.provenance.cr_url == CAT_URL
+    assert out.provenance.fetched_at == "2026-09-03T12:00:00Z" and out.provenance.stale is False
+    assert out.scores_available is None and out.sort is None and out.data is None
+    for kwargs in ({"sort": "bogus"}, {"order": "sideways"}, {"group": "nonexistent-group"}):
+        bad = await cr_ratings(h.rt, 37162, **kwargs)
+        assert bad.error.code == "invalid_filter_value" and bad.error.filter == next(iter(kwargs))
+        assert bad.auth_state == "member" and bad.provenance is not None, kwargs
+        assert bad.provenance.data_tier == "member" and bad.provenance.from_cache is True
+        assert bad.error.candidates, kwargs  # the legal set is structured, not prose-only
+    assert h.requests == []  # every answer came from the cached member row
+
+
+async def test_invalid_filter_value_carries_the_legal_set_in_candidates(tmp_path, c37162):
+    """SPEC §7 *Error taxonomy*: wherever an `invalid_filter_value` knows the legal set, it is
+    in `candidates` in a shape that fits the parameter — `{value}` for a closed vocabulary,
+    `{min, max}` for a span, `{id, name}` for a CR vocabulary — and never only in the prose.
+    The `group` error used to put the legal names AND their ids in the message with
+    `candidates: null`, i.e. the structured field designed for exactly that stood empty."""
+    h = RuntimeHarness(tmp_path)
+    # before the fetch: no row, so `auth_state`/`provenance` null, and no request
+    bad_detail = await cr_ratings(h.rt, 37162, detail="verbose")
+    assert bad_detail.error.filter == "detail" and bad_detail.error.candidates == [
+        {"value": "summary"},
+        {"value": "standard"},
+        {"value": "full"},
+    ]
+    mode = await cr_ratings(h.rt, 37162, group_mode="tree")
+    assert mode.error.candidates == [{"value": "nested"}, {"value": "flat"}]
+    over = await cr_ratings(h.rt, 37162, detail="full", limit=11)
+    assert over.error.filter == "limit" and over.error.candidates == [{"min": 1, "max": 10}]
+    zero = await cr_ratings(h.rt, 37162, limit=0)
+    assert zero.error.candidates == [{"min": 1, "max": 200}]
+    neg = await cr_ratings(h.rt, 37162, offset=-1)
+    assert neg.error.filter == "offset" and neg.error.candidates == [{"min": 0, "max": None}]
+    for out in (bad_detail, mode, over, zero, neg):
+        assert out.auth_state is None and out.provenance is None
+    assert h.requests == []
+    # after the fetch: CR's vocabularies, `{id, name}` rows
+    h.route_page(c37162)
+    group = await cr_ratings(h.rt, 37162, group="nonexistent-group")
+    assert group.error.filter == "group" and group.error.candidates == [
+        {"id": 200367, "name": "30 Inch and Narrower Widths"},
+        {"id": 200369, "name": "31 - 33 Inch Widths"},
+        {"id": 200371, "name": "34 Inch and Wider Widths"},
+    ]
+    assert "(200369)" in group.error.message  # the prose stays; it is no longer the only source
+    sort = await cr_ratings(h.rt, 37162, sort="rank")
+    assert sort.error.candidates == [{"value": "overallScore"}, {"value": "price"}]
+    order = await cr_ratings(h.rt, 37162, order="up")
+    assert order.error.candidates == [{"value": "asc"}, {"value": "desc"}]
+    # brands and attributes: the legal set runs to dozens on a real category and `candidates`
+    # is capped without a count, so the NEAR matches are offered (the `make` rule on cars) and
+    # `cr_filters` stays the home of the complete list; nothing near is null, never `[]`
+    near = await cr_ratings(h.rt, 37162, brands=["Brand A Plus", "Nobody"])
+    assert near.error.filter == "brands" and near.error.candidates == [
+        {"id": 900001, "name": "Brand A"}
+    ]
+    far = await cr_ratings(h.rt, 37162, brands=["Zzz"])
+    assert far.error.candidates is None and "cr_filters" in far.error.message
+    attr = await cr_ratings(h.rt, 37162, features={"door": True})
+    assert attr.error.code == "unknown_filter" and attr.error.filter == "features"
+    assert {"id": 1122, "name": "Door style"} in attr.error.candidates
+    assert all("door" in c["name"].lower() for c in attr.error.candidates)  # the near rule
+    by_display = await cr_ratings(h.rt, 37162, attributes=["speed"])
+    assert by_display.error.filter == "attributes"
+    assert {c["id"] for c in by_display.error.candidates} == {11390}
+    assert h.requests == [CAT_URL]
+
+
+async def test_family_errors_carry_the_known_families(tmp_path, c37162):
+    """Both `family` refusals — not an id, not a known id — offer the families learned so far,
+    `{id, name}`; before any fetch there are none, and the message says why."""
+    h = RuntimeHarness(tmp_path)
+    cold = await cr_categories(h.rt, family="kitchen")
+    assert cold.error.filter == "family" and cold.error.candidates is None
+    h.route_page(c37162)
+    await cr_ratings(h.rt, 37162)
+    for token in ("kitchen", 99999, "c99999"):
+        out = await cr_categories(h.rt, family=token)
+        assert out.error.code == "invalid_filter_value" and out.error.filter == "family", token
+        assert out.error.candidates == [{"id": 28978, "name": "Refrigerators"}], token
 
 
 async def test_filters_single_group_has_no_group_values(tmp_path, banks):

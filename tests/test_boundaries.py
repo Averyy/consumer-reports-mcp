@@ -7,7 +7,8 @@
 4. session.json / CR_SESSION_COOKIE literals appear only in credentials.py
 
 **`auth_state` derivation (SPEC §7)** — every `E.*Envelope(auth_state=...)` in the tool
-modules is `E.auth_state(...)` over a served row, or `None`; never a literal or a helper.
+modules is `E.auth_state(...)` over a served row, or `None`; never a literal or a helper. And
+`provenance=` beside it is null exactly when `auth_state=` is: both describe the served row.
 
 **Base warnings (SPEC §7)** — every `E.*Envelope(...)` a tool module builds, error envelopes
 included, passes its module's base-warnings call inline in `warnings=`.
@@ -132,28 +133,42 @@ def _is_envelope_ctor(fn: ast.expr) -> bool:
     )
 
 
-def _auth_state_sources(tree: ast.Module) -> list[tuple[int, str, list[str]]]:
-    """Every `E.<Something>Envelope(auth_state=...)`: (line, class, sources), where a bare
-    name is resolved to every assignment to it in the enclosing function — so `state` counts
+def _kw_sources(func: ast.AST, node: ast.Call, arg: str) -> list[str] | None:
+    """The source of `arg=` on one call — None when the keyword is absent — where a bare
+    name is resolved to every assignment to it in the enclosing function, so `state` counts
     as whatever `state = ...` was."""
+    kw = next((k for k in node.keywords if k.arg == arg), None)
+    if kw is None:
+        return None
+    exprs = [kw.value]
+    if isinstance(kw.value, ast.Name):
+        exprs = [
+            a.value
+            for a in ast.walk(func)
+            if isinstance(a, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == kw.value.id for t in a.targets)
+        ]
+    return [ast.unparse(e) for e in exprs]
+
+
+def _auth_state_sources(tree: ast.Module) -> list[tuple[int, str, list[str]]]:
+    """Every `E.<Something>Envelope(auth_state=...)`: (line, class, sources)."""
+    return [(line, cls, auth) for line, cls, auth, _ in _row_field_sources(tree)]
+
+
+def _row_field_sources(tree: ast.Module) -> list[tuple[int, str, list[str], list[str] | None]]:
+    """Every `E.<Something>Envelope(auth_state=...)`: (line, class, auth_state sources,
+    provenance sources) — the second None when no `provenance=` keyword was passed."""
     out = []
     funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)]
     for func in funcs:
         for node in ast.walk(func):
             if not (isinstance(node, ast.Call) and _is_envelope_ctor(node.func)):
                 continue
-            kw = next((k for k in node.keywords if k.arg == "auth_state"), None)
-            if kw is None:
+            auth = _kw_sources(func, node, "auth_state")
+            if auth is None:
                 continue
-            exprs = [kw.value]
-            if isinstance(kw.value, ast.Name):
-                exprs = [
-                    a.value
-                    for a in ast.walk(func)
-                    if isinstance(a, ast.Assign)
-                    and any(isinstance(t, ast.Name) and t.id == kw.value.id for t in a.targets)
-                ]
-            out.append((node.lineno, node.func.attr, [ast.unparse(e) for e in exprs]))
+            out.append((node.lineno, node.func.attr, auth, _kw_sources(func, node, "provenance")))
     return out
 
 
@@ -183,6 +198,71 @@ def test_auth_state_is_derived_from_a_served_row_or_null():
             assert sources, f"{rel}:{line} {cls}(auth_state=<unbound name>)"
             for src in sources:
                 assert allowed[rel](src), f"{rel}:{line} {cls}(auth_state={src})"
+
+
+def _null_together(auth: str, prov: str) -> bool:
+    """`auth_state=` and `provenance=` sources agree on whether a row was served: both `None`,
+    both unconditional (a derived tier beside a built provenance), or both conditional on the
+    same fact (`... if served is not None else None`)."""
+    conditional = auth.endswith("else None"), prov.endswith("else None")
+    if auth == "None" or prov == "None":
+        return auth == prov
+    return conditional[0] == conditional[1]
+
+
+def test_auth_state_and_provenance_are_null_together_at_every_site():
+    """SPEC §7: the two fields describe ONE served row, so a site that passes a derived
+    `auth_state=` passes the row's provenance beside it, and a site that passes `None` passes
+    `provenance=None`. `_ratings_error` once took the served tier and hard-coded
+    `provenance=None`, so every `sort`/`order`/`group` error after the fetch answered
+    `auth_state: "member"` with no source, age or cache state — member data from nowhere.
+    `E.RowEnvelope` refuses that at runtime; this pins the sites so the refusal is never the
+    first thing a caller sees."""
+    offenders = []
+    checked = 0
+    for rel, tree in _modules().items():
+        if rel == "reliability.py":  # the pinned literal describes no row (SPEC §7)
+            continue
+        for line, cls, auth, prov in _row_field_sources(tree):
+            checked += 1
+            if prov is None:
+                offenders.append(f"{rel}:{line} {cls}(auth_state=…) without provenance=")
+                continue
+            for a in auth:
+                for p in prov:
+                    if not _null_together(a, p):
+                        offenders.append(f"{rel}:{line} {cls}(auth_state={a}, provenance={p})")
+    assert checked >= 6, checked  # the sites exist; a moved module must not blind this
+    assert not offenders, offenders
+
+
+def test_null_together_check_detects_a_split(tmp_path):
+    """Sanity: a derived tier beside `provenance=None`, a null tier beside a built provenance,
+    a conditional tier beside an unconditional `None`, and three correct pairings."""
+    fake = tmp_path / "tools_products.py"
+    fake.write_text(
+        "def a(served):\n"
+        "    return E.RatingsEnvelope(auth_state=E.auth_state(served.data_tier, served.session), "
+        "provenance=None)\n"
+        "def b(served):\n"
+        "    return E.RatingsEnvelope(auth_state=None, provenance=_provenance(served))\n"
+        "def c(served):\n"
+        "    return E.RatingsEnvelope(auth_state=E.auth_state(t, s) if served else None, "
+        "provenance=None)\n"
+        "def d(served):\n"
+        "    state = E.auth_state(served.data_tier, served.session)\n"
+        "    return E.RatingsEnvelope(auth_state=state, provenance=_provenance(served))\n"
+        "def e(rt):\n"
+        "    return E.FiltersEnvelope(auth_state=None, provenance=None)\n"
+        "def f(served):\n"
+        "    return E.RatingsEnvelope(auth_state=E.auth_state(t, s) if served is not None else "
+        "None, provenance=_provenance(served) if served is not None else None)\n"
+    )
+    verdicts = {
+        line: all(_null_together(a, p) for a in auth for p in prov)
+        for line, _, auth, prov in _row_field_sources(ast.parse(fake.read_text()))
+    }
+    assert verdicts == {2: False, 4: False, 6: False, 9: True, 11: True, 13: True}
 
 
 def test_auth_state_check_detects_a_guess(tmp_path):

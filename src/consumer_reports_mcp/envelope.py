@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_serializer
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from .config import SEARCH_QUERY_MAX_CHARS
 from .credentials import ENV_VAR
@@ -34,9 +34,14 @@ CredentialSource = Literal["env", "file", "memory"]
 # whose `provenance` is null for the same reason. It is never filled in from the session alone:
 # with no row there is no tier, and a guess of "anonymous" beside `session: "active"` is the
 # tier of a row that does not exist, sitting next to a verified-live credential (SPEC §7).
+# The converse holds too, and `RowEnvelope` enforces both at construction: a row that is real
+# enough to name a tier is real enough to have a provenance, so `auth_state: "member"` beside
+# `provenance: null` — "this is member data, from nowhere, of no age" — is refused. A filter
+# rejected after the fetch shipped exactly that once, on every `sort`/`order`/`group` error.
 AUTH_STATE_DESCRIPTION = (
     "Derived from the served row's tier and the session. null only on an error envelope where "
-    "no row was served (provenance is null too); read `session` for the credential's health."
+    "no row was served (provenance is null too, and never otherwise); read `session` for the "
+    "credential's health."
 )
 
 # The warnings vocabulary (SPEC §7 *Response envelope*, CLAUDE.md *Warnings vocabulary*) — the
@@ -109,6 +114,26 @@ EXPIRED_FIX_TEMPLATE = (
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class RowEnvelope(Strict):
+    """An envelope whose `auth_state` and `provenance` both describe ONE served row (SPEC §7):
+    the three products envelopes. Either a row was served — then its tier AND where it came
+    from, how old it is and whether it was cached are all known, error or not — or none was,
+    and both are null. The two fields are set by different code (`E.auth_state(...)` at the
+    site, `_provenance(served)` beside it), which is how one was dropped: the post-fetch filter
+    error kept the tier and forgot the provenance. Checked here so no site can do it again."""
+
+    @model_validator(mode="after")
+    def _row_or_nothing(self):
+        state = getattr(self, "auth_state", None)
+        prov = getattr(self, "provenance", None)
+        if (state is None) != (prov is None):
+            raise ValueError(
+                f"auth_state={state!r} with provenance={'null' if prov is None else 'set'}: both "
+                "describe the served row, so both are null (no row) or neither is (SPEC §7)"
+            )
+        return self
 
 
 # --------------------------------------------------------------------------- shared blocks
@@ -305,7 +330,7 @@ class FlatRatings(Strict):
     notice: str | None
 
 
-class RatingsEnvelope(Strict):
+class RatingsEnvelope(RowEnvelope):
     auth_state: AuthState | None = Field(description=AUTH_STATE_DESCRIPTION)
     session: Session
     scores_available: ScoresAvailable | None
@@ -332,7 +357,7 @@ class ProductData(Strict):
     notice: str | None
 
 
-class ProductEnvelope(Strict):
+class ProductEnvelope(RowEnvelope):
     auth_state: AuthState | None = Field(description=AUTH_STATE_DESCRIPTION)
     session: Session
     scores_available: ScoresAvailable | None
@@ -400,7 +425,7 @@ class FiltersData(Strict):
     )
 
 
-class FiltersEnvelope(Strict):
+class FiltersEnvelope(RowEnvelope):
     auth_state: AuthState | None = Field(description=AUTH_STATE_DESCRIPTION)
     session: Session
     scores_available: ScoresAvailable | None
@@ -782,6 +807,21 @@ def candidates(items: Iterable[Any]) -> list[Any] | None:
         else:
             out.append(clipped(item) if isinstance(item, str) else item)
     return out or None
+
+
+def legal_values(values: Iterable[Any]) -> list[dict[str, Any]] | None:
+    """`error.candidates` for a CLOSED parameter vocabulary — `detail`, `sort`, `order`,
+    `group_mode`, `state`: `[{"value": v}, …]`, keyed by the word the caller passes. One shape
+    for every enum parameter on both surfaces, so an agent reads `candidates[*].value` rather
+    than parsing `must be one of (...)` out of the prose (SPEC §7 *Error taxonomy*)."""
+    return candidates({"value": v} for v in values)
+
+
+def legal_range(lo: Any, hi: Any) -> list[dict[str, Any]]:
+    """`error.candidates` for a NUMERIC parameter whose legal set is a span — `year`, `limit`,
+    `offset`: `[{"min": lo, "max": hi}]`, an open bound `null` (the `[min, max]` convention
+    `features=` already accepts). The one entry is the whole legal set, never an example."""
+    return [{"min": lo, "max": hi}]
 
 
 def _render_value(v: Any) -> str:

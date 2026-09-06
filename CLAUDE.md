@@ -346,13 +346,39 @@ per category, no api-key, no pagination.
   `session` alone says how the credential is. A `_error_state(rt)` helper once filled it in
   from health — `session_expired` if expired, else `anonymous` — which put `auth_state:
   "anonymous"` beside `session: "active"` on every such error: the tier of a row that does not
-  exist, re-derived on one surface. An error with a row in hand (`unknown_product` in a cached
-  category, a filter error after the fetch) keeps that row's tier. `cr_reliability` pins the
-  literal `"anonymous"`; cars omit the key (one tier, SPEC §7): `null` = "no row to describe",
-  omitted = "not a concept on this surface". The key is required and the enum stays in the
-  `outputSchema` (`anyOf` with `null`). `tests/test_boundaries.py` walks every
-  `E.*Envelope(auth_state=)` and accepts only `E.auth_state(...)`, `None`, or reliability's
-  literal — do not "fix" the null back to a value.
+  exist, re-derived on one surface. **An error with a row in hand (`unknown_product` in a
+  cached category, a filter error after the fetch) keeps that row's tier AND its provenance —
+  the two are null together or set together, never split.** `cr_ratings`' error path once
+  took the served tier and hard-coded `provenance=None`, so every `sort`/`order`/`group` error
+  after the fetch answered `auth_state: "member"` with no source, age or cache state — member
+  data from nowhere. `E.RowEnvelope` (the base of the three products envelopes) refuses the
+  split at construction in both directions; `_ratings_error(rt, err, served=)` builds the
+  envelope from the row (tier, provenance, session, the row's own warnings), and
+  `reliability_payload_missing` over a cached row carries its `ReliabilityProvenance` too.
+  `cr_reliability` pins the literal `"anonymous"`; cars omit the key (one tier, SPEC §7):
+  `null` = "no row to describe", omitted = "not a concept on this surface". The key is
+  required and the enum stays in the `outputSchema` (`anyOf` with `null`).
+  `tests/test_boundaries.py` walks every `E.*Envelope(auth_state=)` and accepts only
+  `E.auth_state(...)`, `None`, or reliability's literal — and checks the `provenance=` beside
+  it agrees — do not "fix" the null back to a value. Cars have no served-row-then-error shape
+  to pin: every `cr_cars`/`cr_car` error is raised before a listing or model-year is served,
+  and a per-row ratings failure inside `detail="standard"` is a warning, not an error.
+- **IMPORTANT: `error.candidates` carries the legal set wherever a site knows it, in one of
+  THREE shapes with one constructor each — never only in the prose, never a bare scalar.**
+  `E.legal_values(vocab)` → `[{"value": v}]` for a closed vocabulary (`detail`, `sort`,
+  `order`, `group_mode`, `state`); `E.legal_range(lo, hi)` → `[{"min", "max"}]` for a span
+  (`year`, `limit` up to the cap for that `detail`, `offset` with `max: null`);
+  `E.candidates(rows)` for CR's vocabularies with the key the caller passes and the name they
+  recognise (`group` `{id, name}`, `car_type` `{id, slug, name}`, `make` `{slug, name}`, a cars
+  `category` under its type `{id, name}`, `family` `{id, name}`). Measured 2026-09-06: only
+  `year` populated it; `group` put the legal names AND ids in the message with `candidates:
+  null`. `brands` and an unknown attribute offer NEAR matches (`query.near_matches`, the `make`
+  rule), not the full set — `candidates` is capped at 12 with no count of what was left out,
+  so a truncated full list would claim a twelfth of the vocabulary is all of it; `cr_filters`
+  is the structured home of the complete list. Sites with no legal set to offer (a type-shape
+  error, a missing companion parameter, `query`'s length, an ordinary `unknown_category`) keep
+  `candidates: null` — never `[]`, which claims "no legal values". SPEC §7 *Error taxonomy*
+  has the table.
 - **The paywall is partial.** Only `overallDisplayScore` and `numeric-rating-score` values are
   gated. Owner satisfaction, predicted reliability, CR Recommended, prices and specs are public,
   so `scores_available` is an object — and its values are `available` / `absent` / `unavailable`,

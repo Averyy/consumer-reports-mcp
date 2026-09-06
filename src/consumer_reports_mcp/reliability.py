@@ -17,6 +17,7 @@ from .repository import ToolError
 if TYPE_CHECKING:
     from .runtime import Runtime
 
+RELIABILITY_DETAILS = ("standard", "full")  # `full` adds the /100 scale (SPEC §7)
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
 
@@ -201,7 +202,7 @@ async def cr_reliability(
     include_methodology: bool = False,
     refresh: bool = False,
 ) -> E.ReliabilityEnvelope:
-    if detail not in ("standard", "full"):
+    if detail not in RELIABILITY_DETAILS:
         return E.ReliabilityEnvelope(
             auth_state="anonymous",
             scores_available=None,
@@ -211,6 +212,7 @@ async def cr_reliability(
                 code="invalid_filter_value",
                 message="detail must be standard or full",
                 filter="detail",
+                candidates=E.legal_values(RELIABILITY_DETAILS),
             ),
             data=None,
         )
@@ -227,12 +229,19 @@ async def cr_reliability(
     parsed = parse_reliability(served.payload, served.category_id, full=detail == "full")
     if not parsed["found"]:
         # the cached payload does not describe this category (a constructed URL that landed
-        # elsewhere): our gap, never CR's absence
+        # elsewhere): our gap, never CR's absence. A row WAS served, so its provenance rides on
+        # the error as on the products tools (SPEC §7) — `cr_url` is the URL that landed
+        # elsewhere, which is the diagnostic
         return E.ReliabilityEnvelope(
             auth_state="anonymous",
             scores_available=None,
-            provenance=None,
-            warnings=list(rt.discovery.warnings()),
+            provenance=E.ReliabilityProvenance(
+                fetched_at=served.fetched_at,
+                cr_url=served.cr_url,
+                from_cache=served.from_cache,
+                stale=served.stale,
+            ),
+            warnings=list(served.warnings) + rt.discovery.warnings(),
             error=E.ToolError(
                 code="reliability_payload_missing",
                 message=f"the reliability payload on hand does not describe c{served.category_id}",

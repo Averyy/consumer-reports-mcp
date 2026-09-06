@@ -30,7 +30,7 @@ from ..config import CARS_API
 from ..normalize import as_int
 from ..transport import Challenged, FetchFailed, failure_code
 from .api import guarded
-from .index import ensure_taxonomy, known_make_slugs, resolve_car_type, slugify
+from .index import ensure_taxonomy, known_makes, resolve_car_type, slugify
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
@@ -88,6 +88,11 @@ async def build_listing_params(
                 "invalid_filter_value",
                 f"car_type {E.quoted(car_type)} is not a Consumer Reports car type; legal: {legal}",
                 filter="car_type",
+                candidates=E.candidates(
+                    {"id": x["id"], "slug": x["slug"], "name": x["name"]}
+                    for x in taxonomy["types"]
+                    if x.get("slug")
+                ),
             )
         params["carTypeSlugName"] = t["slug"]
         if cat is not None:
@@ -99,11 +104,14 @@ async def build_listing_params(
                     "invalid_filter_value",
                     f"category {cat} is not under car type {E.quoted(t['slug'])}; legal: {legal}",
                     filter="category",
+                    candidates=E.candidates(
+                        {"id": c["id"], "name": c["name"]} for c in t["categories"]
+                    ),
                 )
             params["categoryId"] = cat
     if make is not None:
         slug = slugify(make)
-        known = known_make_slugs(rt)
+        known = known_makes(rt)
         if known and slug not in known:
             near = sorted(k for k in known if slug in k or k in slug)[:5]
             raise CarsQueryError(
@@ -115,14 +123,17 @@ async def build_listing_params(
                     else "; run cr_car_search to find it"
                 ),
                 filter="make",
-                candidates=E.candidates(near),
+                candidates=E.candidates({"slug": k, "name": known[k]} for k in near),
             )
         params["slugMakeName"] = slug
     if state is not None:
         sid = STATE_IDS.get(str(state).strip().lower())
         if sid is None:
             raise CarsQueryError(
-                "invalid_filter_value", "state must be 'new' or 'used'", filter="state"
+                "invalid_filter_value",
+                "state must be 'new' or 'used'",
+                filter="state",
+                candidates=E.legal_values(STATE_IDS),
             )
         params["modelYearStateId"] = sid
     if year is not None:
@@ -165,10 +176,12 @@ def validate_year(rt: Runtime, year: Any) -> int:
         try:
             value = int(str(year).strip())
         except (TypeError, ValueError):
+            span = rt.cache.car_year_range()
             raise CarsQueryError(
                 "invalid_filter_value",
                 f"year must be a model year such as 2024, not {E.quoted(year)}",
                 filter="year",
+                candidates=E.legal_range(*span) if span is not None else None,
             ) from None
     span = rt.cache.car_year_range()
     if span is not None and not (span[0] <= value <= span[1] + YEAR_LAG_ALLOWANCE):
@@ -176,7 +189,7 @@ def validate_year(rt: Runtime, year: Any) -> int:
             "invalid_filter_value",
             f"year {value} is outside Consumer Reports' catalogue, which spans {span[0]}–{span[1]}",
             filter="year",
-            candidates=[{"min": span[0], "max": span[1]}],
+            candidates=E.legal_range(*span),
         )
     return value
 
@@ -204,7 +217,7 @@ def year_rejected(rt: Runtime, exc: FetchFailed, params: dict[str, Any]) -> Cars
         "invalid_filter_value",
         f"Consumer Reports' cars API rejected year {year} as not a valid model year{hint}",
         filter="year",
-        candidates=[{"min": span[0], "max": span[1]}] if span is not None else None,
+        candidates=E.legal_range(*span) if span is not None else None,
     )
 
 

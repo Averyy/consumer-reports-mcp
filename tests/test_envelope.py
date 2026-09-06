@@ -144,7 +144,9 @@ def test_auth_state_is_null_only_where_no_row_was_served():
 
 def test_error_and_data_mutually_exclusive():
     err = E.ToolError(code="unknown_category", message="nope", reason="not_in_index")
-    env = _ratings(error=err, data=None, scores_available=None, provenance=None, sort=None)
+    env = _ratings(
+        auth_state=None, error=err, data=None, scores_available=None, provenance=None, sort=None
+    )
     assert env.error is not None and env.data is None
     # the envelope is constructed by the tools; the invariant is that a non-null error never
     # travels with data — pin it on the model dump used by the server
@@ -473,3 +475,53 @@ def test_bad_query_refuses_an_empty_or_over_long_query_without_echoing_it():
     err = E.bad_query("x" * 200_000)
     assert err.filter == "query" and "200,000" in err.message and len(err.message) < 100
     assert "xxx" not in err.message
+
+
+def test_auth_state_and_provenance_are_null_together():
+    """SPEC §7: both describe the SERVED row, so an envelope with a tier and no provenance —
+    "member data, from nowhere, of no age" — is refused at construction, as is a provenance
+    with no tier. A filter rejected after the fetch shipped the first shape on every
+    `sort`/`order`/`group` error; the model now makes it unconstructible on all three
+    products envelopes, whatever site builds them."""
+    prov = E.Provenance(
+        data_tier="member",
+        fetched_at="2026-09-03T12:00:00Z",
+        cr_url="https://x/",
+        from_cache=True,
+        stale=False,
+        superseded_at=None,
+    )
+    err = E.ToolError(code="invalid_filter_value", message="nope", filter="sort")
+    for model, extra in (
+        (E.RatingsEnvelope, {"sort": None}),
+        (E.ProductEnvelope, {}),
+        (E.FiltersEnvelope, {}),
+    ):
+        base = dict(session="active", scores_available=None, warnings=[], error=err, data=None)
+        with pytest.raises(ValueError, match="provenance=null"):
+            model(auth_state="member", provenance=None, **base, **extra)
+        with pytest.raises(ValueError, match="provenance=set"):
+            model(auth_state=None, provenance=prov, **base, **extra)
+        assert model(auth_state="member", provenance=prov, **base, **extra).auth_state == "member"
+        assert model(auth_state=None, provenance=None, **base, **extra).provenance is None
+    assert issubclass(E.RatingsEnvelope, E.RowEnvelope)
+    for model in (E.ReliabilityEnvelope, E.CarsEnvelope, E.CarEnvelope, E.CategoriesEnvelope):
+        assert not issubclass(model, E.RowEnvelope)  # no derived `auth_state` to pair
+
+
+def test_legal_values_and_legal_range_are_the_two_candidate_shapes():
+    """`candidates` has three shapes (SPEC §7 *Error taxonomy*): `{value}` for a closed
+    vocabulary, `{min, max}` for a numeric span, and `{id, name}`-style rows for a CR
+    vocabulary. The first two have one constructor each, so every enum parameter on both
+    surfaces answers the same key — `candidates[*].value` — and never a bare scalar the
+    caller has to guess the meaning of. `legal_values` is bounded like `candidates`; an empty
+    vocabulary is None, never `[]`."""
+    assert E.legal_values(("summary", "standard")) == [{"value": "summary"}, {"value": "standard"}]
+    assert E.legal_values({"new": 2, "used": 1}) == [{"value": "new"}, {"value": "used"}]
+    assert E.legal_values(()) is None
+    assert len(E.legal_values(range(100))) == E.QUOTE_MAX_ITEMS
+    assert E.legal_values(["x" * 100])[0]["value"] == "x" * E.QUOTE_MAX_CHARS + "…"
+    assert E.legal_range(1, 25) == [{"min": 1, "max": 25}]
+    assert E.legal_range(0, None) == [{"min": 0, "max": None}]  # an open bound is null
+    err = E.ToolError(code="invalid_filter_value", message="m", candidates=E.legal_range(1, 2))
+    assert err.model_dump()["candidates"] == [{"min": 1, "max": 2}]

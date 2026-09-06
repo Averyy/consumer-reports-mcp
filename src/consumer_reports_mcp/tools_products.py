@@ -98,19 +98,21 @@ def _shape_model(shape: dict, detail: str) -> E.Product:
     return E.ProductFull(**shape)
 
 
-def _ratings_error(
-    rt: Runtime, err: Any, *, session: str | None = None, data_tier: str | None = None
-) -> E.RatingsEnvelope:
-    session = session or rt.health.health.value
-    # `auth_state` describes the served row; with no row it is null, like `provenance` (SPEC §7)
-    state = E.auth_state(data_tier, session) if data_tier else None
+def _ratings_error(rt: Runtime, err: Any, *, served: Served | None = None) -> E.RatingsEnvelope:
+    """The `cr_ratings` error envelope. With a row in hand — a filter rejected AFTER the fetch —
+    it describes that row like a success does: its tier in `auth_state`, its provenance, its
+    session, and the row's own warnings (`empty_category`, `attribute_dictionary_missing` — the
+    second is exactly what an `unknown_filter` on `features` is about). `auth_state` and
+    `provenance` travel together or not at all (SPEC §7; `E.RowEnvelope` refuses the split):
+    a caller who mistyped `sort` still learns the category was fetched, when, and from where.
+    With no row both are null, and `session` alone says how the credential is."""
     return E.RatingsEnvelope(
-        auth_state=state,
-        session=session,
+        auth_state=E.auth_state(served.data_tier, served.session) if served is not None else None,
+        session=served.session if served is not None else rt.health.health.value,
         scores_available=None,
-        provenance=None,
+        provenance=_provenance(served) if served is not None else None,
         sort=None,
-        warnings=list(_base_warnings(rt)),
+        warnings=(_envelope_warnings(served) if served is not None else []) + _base_warnings(rt),
         error=E.error_model(err),
         data=None,
     )
@@ -140,13 +142,21 @@ async def cr_ratings(
     if detail not in DETAILS:
         return _ratings_error(
             rt,
-            QueryError("invalid_filter_value", f"detail must be one of {DETAILS}", filter="detail"),
+            QueryError(
+                "invalid_filter_value",
+                f"detail must be one of {DETAILS}",
+                filter="detail",
+                candidates=E.legal_values(DETAILS),
+            ),
         )
     if group_mode not in GROUP_MODES:
         return _ratings_error(
             rt,
             QueryError(
-                "invalid_filter_value", "group_mode must be nested or flat", filter="group_mode"
+                "invalid_filter_value",
+                "group_mode must be nested or flat",
+                filter="group_mode",
+                candidates=E.legal_values(GROUP_MODES),
             ),
         )
     try:  # paging is knowable without the payload; rejecting after the fetch costs 11 MB
@@ -251,7 +261,7 @@ async def cr_ratings(
                 notice=" ".join(notice_parts) or None,
             )
     except QueryError as qe:
-        return _ratings_error(rt, qe, session=session, data_tier=served.data_tier)
+        return _ratings_error(rt, qe, served=served)
     return E.RatingsEnvelope(
         auth_state=state,
         session=session,
@@ -584,6 +594,7 @@ async def cr_categories(
         )
     fam: int | None = None
     if family is not None:
+        known = rt.cache.known_families()
         try:
             fam = int(str(family).lstrip("cC"))
         except ValueError:
@@ -595,11 +606,10 @@ async def cr_categories(
                     code="invalid_filter_value",
                     message=f"family must be a supercategory id, not {E.quoted(family)}",
                     filter="family",
+                    candidates=E.candidates(known),
                 ),
                 data=None,
             )
-    if fam is not None:
-        known = rt.cache.known_families()
         if fam not in {f["id"] for f in known}:
             # a member category id is the likely mistake, and an empty list would read as
             # "this family holds nothing" rather than "that is not a family"

@@ -1127,10 +1127,19 @@ class Cache:
     def car_index_status(self) -> dict | None:
         return self.discovery_status().get("car_index")
 
-    def car_make_slugs(self) -> list[str]:
+    def car_makes(self) -> list[dict]:
+        """`[{slug, name}]`, one per make slug, sorted by slug — the `make` vocabulary with the
+        display name beside the slug. A slug CR spells under two names (it does not, measured;
+        this guards the join) keeps the first name in `make` order."""
         with self._connect() as conn:
-            rows = conn.execute("SELECT DISTINCT slug_make FROM car_index").fetchall()
-        return sorted(r[0] for r in rows if r[0])
+            rows = conn.execute(
+                "SELECT DISTINCT slug_make, make FROM car_index WHERE slug_make IS NOT NULL "
+                "ORDER BY slug_make, make"
+            ).fetchall()
+        out: dict[str, str | None] = {}
+        for slug, name in rows:
+            out.setdefault(slug, name)
+        return [{"slug": s, "name": n} for s, n in out.items()]
 
     def car_year_range(self) -> tuple[int, int] | None:
         """`(min, max)` model year across the cars index, or None while the index is empty —
