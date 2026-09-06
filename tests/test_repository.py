@@ -639,9 +639,7 @@ async def test_get_product_retained_row_past_ttl_refetches_once_then_serves(tmp_
     assert len(h.requests) == 1
 
 
-async def test_get_product_dropped_from_the_catalogue_does_not_refetch_every_call(
-    tmp_path, c37162
-):
+async def test_get_product_dropped_from_the_catalogue_does_not_refetch_every_call(tmp_path, c37162):
     """A product CR removed: the only row that still contains it is the old one, so "when was
     the served row fetched" is stale forever. The check that matters is on the CATEGORY."""
     import copy
@@ -710,13 +708,9 @@ async def test_the_auth_probe_is_exempt_from_the_refresh_cooldown(tmp_path, c371
         WWW + AUTH_PROBE_PATH,
         lambda url, kw: _page(probe, url=url, subscriber="true", fill_scores=True),
     )
-    a = await h.repo.get_category(
-        AUTH_PROBE_CATEGORY, refresh=True, validate=False, cooldown=False
-    )
+    a = await h.repo.get_category(AUTH_PROBE_CATEGORY, refresh=True, validate=False, cooldown=False)
     h.clock.now = T0 + timedelta(seconds=30)
-    b = await h.repo.get_category(
-        AUTH_PROBE_CATEGORY, refresh=True, validate=False, cooldown=False
-    )
+    b = await h.repo.get_category(AUTH_PROBE_CATEGORY, refresh=True, validate=False, cooldown=False)
     assert isinstance(a, Served) and isinstance(b, Served)
     assert a.fetch_kind == b.fetch_kind == ingest.MEMBER and len(h.requests) == 2
 

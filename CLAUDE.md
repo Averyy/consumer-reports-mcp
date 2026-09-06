@@ -749,6 +749,7 @@ per category, no api-key, no pagination.
 uv sync --extra dev
 .venv/bin/pytest tests/ -x -q          # tests (tests/live is skipped unless CR_LIVE=1)
 .venv/bin/ruff check src/ tests/ scripts/   # lint (fix with --fix)
+.venv/bin/ruff format --check src/ tests/ scripts/   # formatting; CI gates on it too
 uv run --with tiktoken --no-sync scripts/measure_sizes.py   # sizing, needs scratch/ captures
 uv run scripts/build_bundle.py         # the Claude Desktop .mcpb; no network, version generated
 ```

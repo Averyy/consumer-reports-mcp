@@ -1,7 +1,15 @@
 # consumer-reports-mcp
 
+[![CI](https://github.com/Averyy/consumer-reports-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Averyy/consumer-reports-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Averyy/consumer-reports-mcp/blob/main/LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+
 Consumer Reports ratings as MCP tools, run locally against your own membership. Nothing is hosted
 and nothing is shared.
+
+An [MCP](https://modelcontextprotocol.io) server: it gives an AI assistant — Claude Desktop, Claude
+Code, or any MCP client — a set of typed tools for querying Consumer Reports, instead of the
+assistant guessing from memory. Beta, and tested on Linux, macOS and Windows on every push.
 
 CR has no member API and no export. Its front end ships each category's whole dataset as JSON
 embedded in the page, so one request returns scores, reliability, prices and specs as structured
@@ -171,6 +179,7 @@ uv sync --extra dev
 CR_LIVE=1 .venv/bin/pytest tests/live/test_live_canary.py -q   # anonymous, 2 requests: is the
                                       # attribute dictionary still on CR's page?
 .venv/bin/ruff check src/ tests/ scripts/
+.venv/bin/ruff format --check src/ tests/ scripts/
 uv run scripts/build_bundle.py        # the Claude Desktop bundle, version taken from pyproject
 ```
 
@@ -191,3 +200,12 @@ complying with it is your responsibility. Not legal advice.
 ## License
 
 [MIT](https://github.com/Averyy/consumer-reports-mcp/blob/main/LICENSE)
+
+## Contributing
+
+Issues and pull requests are welcome at
+[github.com/Averyy/consumer-reports-mcp/issues](https://github.com/Averyy/consumer-reports-mcp/issues).
+Read [`SPEC.md`](https://github.com/Averyy/consumer-reports-mcp/blob/main/SPEC.md) first — it is
+the design of record, and most of its rules exist because something measurable went wrong without
+them. `ruff check`, `ruff format --check` and the test suite all run in CI on three operating
+systems; `CR_LIVE=1` tests hit Consumer Reports anonymously and are opt-in.

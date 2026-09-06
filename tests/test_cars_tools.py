@@ -292,9 +292,7 @@ async def test_empty_filtered_listing_names_every_filter_and_never_paging(tmp_pa
     assert "offset" not in warning and "limit" not in warning
 
 
-async def test_no_results_emission_does_not_depend_on_the_unfiltered_refusal(
-    tmp_path, monkeypatch
-):
+async def test_no_results_emission_does_not_depend_on_the_unfiltered_refusal(tmp_path, monkeypatch):
     """The emission is gated on the tool's own filters, like `spec.active` on products — NOT
     on `build_listing_params` refusing an unfiltered call first. With that refusal lifted and
     CR answering zero rows, the answer is a proper envelope (an empty page, no `no_results`,

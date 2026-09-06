@@ -36,6 +36,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --extra dev --extra browser
       - run: uv run ruff check src/ tests/ scripts/
+      - run: uv run ruff format --check src/ tests/ scripts/
       - run: uv run pytest tests/ -x -q
       - run: uv run scripts/build_bundle.py
 

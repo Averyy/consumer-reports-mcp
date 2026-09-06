@@ -47,6 +47,7 @@ jobs:
 
       - run: uv sync --extra dev --extra browser
       - run: uv run ruff check src/ tests/ scripts/
+      - run: uv run ruff format --check src/ tests/ scripts/
       - run: uv run pytest tests/ -x -q
 
       # --no-sources ignores [tool.uv.sources], so this builds what a PyPI consumer would

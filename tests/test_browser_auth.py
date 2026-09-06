@@ -125,9 +125,7 @@ def test_never_references_password_field():
 
 
 async def test_polls_until_hash_then_returns():
-    browser = FakeBrowser(
-        [[], [{"name": "userToken", "value": "x"}], [_hash_cookie("a" * 36)]]
-    )
+    browser = FakeBrowser([[], [{"name": "userToken", "value": "x"}], [_hash_cookie("a" * 36)]])
     pw = FakePlaywright(browser)
     token = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
     assert token == "a" * 36
@@ -602,13 +600,16 @@ def test_proc_cmdline_is_read_exactly_and_a_missing_pid_is_gone(tmp_path):
     (tmp_path / "self" / "cmdline").write_bytes(b"pytest\0")
     (tmp_path / "4242").mkdir()
     (tmp_path / "4242" / "cmdline").write_bytes(
-        b"/opt/google/chrome/chrome\0--disable-field-trial-config\0" + b"--x=" + b"y" * 400
+        b"/opt/google/chrome/chrome\0--disable-field-trial-config\0"
+        + b"--x="
+        + b"y" * 400
         + b"\0--user-data-dir=/tmp/playwright_chromiumdev_profile-abc\0--flag\0"
     )
     cmd, status = B._proc_command_line(4242, proc=str(tmp_path))
     assert status == B.STATUS_FOUND
     assert cmd == (
-        "/opt/google/chrome/chrome --disable-field-trial-config --x=" + "y" * 400
+        "/opt/google/chrome/chrome --disable-field-trial-config --x="
+        + "y" * 400
         + " --user-data-dir=/tmp/playwright_chromiumdev_profile-abc --flag"
     )
     assert B._proc_command_line(4243, proc=str(tmp_path)) == (None, B.STATUS_GONE)

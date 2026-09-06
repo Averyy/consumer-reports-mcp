@@ -47,9 +47,7 @@ async def test_index_refresh_failure_serves_the_cached_index_with_a_warning(tmp_
     h.sess.route(keys_url, wafer.ConnectionFailed(keys_url, "offline"))
     out = await cr_car_search(h.rt, "make b", refresh=True)
     assert out.error is None
-    assert [c.model_year_id for c in out.data.cars] == [
-        c.model_year_id for c in seeded.data.cars
-    ]
+    assert [c.model_year_id for c in out.data.cars] == [c.model_year_id for c in seeded.data.cars]
     assert any(w.startswith("index_refresh_failed:") for w in out.warnings)
 
 

@@ -1862,7 +1862,7 @@ sufficient test:
 
 | Value | Meaning | Scores |
 |---|---|---|
-| `anonymous` | No cookie configured, or configured and unverified. Expected, not an error. | gated fields `null` |
+| `anonymous` | The SERVED ROW was fetched without a confirmed member session — no cookie, an unverified one, or a cached anonymous row served under a live session after a refetch failed. A statement about the row, never about the credential; `session` carries that. Expected, not an error. | gated fields `null` |
 | `member` | The served row was fetched with a confirmed logged-in session. | populated |
 | `session_expired` | Cookie **was** configured but the page came back logged-out. | gated fields `null` |
 
