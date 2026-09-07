@@ -2,7 +2,9 @@
 
 No mcp import (D4): plain async functions over a `Runtime`, wrapped by `server.py`. Nothing here
 returns, logs or formats a cookie value — the token travels `capture_hash()` → the probe
-validation → `CredentialStore.save()` and nowhere else.
+validation → `CredentialStore.save()` and nowhere else. Its expiry travels with it: the browser
+reports one, and it is stored so the renewal countdown counts from CR's own date rather than
+from the assumed 365-day bound (`credentials`).
 
 Why a background task and a status poll rather than one blocking call: Claude Desktop kills a
 local tool call at 60 s and progress notifications do not extend it, while a human sign-in takes
@@ -32,7 +34,9 @@ from .browser_auth import (
     INSTALL_COMMAND,
     BrowserExtraMissing,
     BrowserNotFound,
+    Capture,
     CaptureTimeout,
+    NotDurable,
     WindowClosed,
     capture_hash,
     extra_installed,
@@ -60,7 +64,7 @@ STATUS_WAIT_MAX_S = 45  # the long-poll cap: under Claude Desktop's 60 s tool-ca
 CANCEL_WAIT_S = 10  # cancel() returns within this even if the window's teardown is slower
 
 RuntimeFactory = Callable[[Settings, CredentialStore], "Runtime"]
-CaptureFn = Callable[..., Awaitable[str]]
+CaptureFn = Callable[..., Awaitable[Capture]]
 ValidateFn = Callable[[Settings, Mapping[str, str]], Awaitable[str]]
 
 # The verdicts `validate_cookies` can return that mean "CR looked at this cookie and said no"
@@ -239,7 +243,8 @@ class SignInFlow:
                 "Reports. Unset it and call cr_sign_in again.",
             )
         # The guard. `force` means one thing only: replace a cookie verified live. Without it:
-        #   - a cookie past its own 365-day upper bound cannot be live → proceed (renewal);
+        #   - a cookie past its expiry — measured, or the assumed 365-day bound — cannot be
+        #     live → proceed (renewal);
         #   - `active` (a marker-bearing fetch THIS process saw it live) → refuse;
         #   - `unverified` → resolve, not refuse blind: check the stored cookie against CR in
         #     the background and open a window only if CR rejects it. Health only ever leaves
@@ -252,7 +257,9 @@ class SignInFlow:
             left = rt.credentials.status().get("remaining_days_max")
             if left is not None and left <= 0:
                 log.info(
-                    "sign-in: the stored cookie is past its 365-day bound (%s days); renewing", left
+                    "sign-in: the stored cookie is past its expiry (%s days, %s); renewing",
+                    left,
+                    rt.credentials.status().get("expiry_basis"),
                 )
             elif health is SessionHealth.ACTIVE:
                 return self._answer("refused", "session_active", self._session_active_text())
@@ -333,8 +340,7 @@ class SignInFlow:
             f"(session: {self.rt.health.health.value}), so signing in again would only replace "
             "a working cookie. Pass force=true to replace it anyway — for example to renew a "
             "cookie that is about to expire (cr_auth_status reports days_left_max). A cookie CR "
-            "has rejected (session: expired), or one past its 365-day bound, is renewed without "
-            "force."
+            "has rejected (session: expired), or one past its expiry, is renewed without force."
         )
 
     def _failure_text(self, reason: str | None) -> str:
@@ -359,6 +365,13 @@ class SignInFlow:
             return (
                 f"No session appeared within {self.timeout_s} s; nothing was captured and "
                 "nothing changed. Call cr_sign_in again to retry."
+            )
+        if r == "not_durable":
+            return (
+                "Consumer Reports issued a session-only cookie — one with no expiry, meaning "
+                '"Remember Me" did not take — so it would have died within days while the '
+                "status claimed a year; nothing was captured and nothing changed. Call "
+                'cr_sign_in again and ask the user to leave "Remember Me" ticked when signing in.'
             )
         if r in DEAD_VERDICTS:
             # NOT "tick remember me": CR renders `setAutoLogin` already checked and the flow
@@ -453,7 +466,7 @@ class SignInFlow:
         if self.phase != "waiting":
             self._set("waiting")
         try:
-            token = await capture(timeout_s=self.timeout_s, on_launch=self._on_launch)
+            captured = await capture(timeout_s=self.timeout_s, on_launch=self._on_launch)
         except BrowserExtraMissing:
             self._set("failed", "browser_extra_missing")
             return
@@ -467,6 +480,10 @@ class SignInFlow:
         except CaptureTimeout:
             self._set("failed", "capture_timeout")
             return
+        except NotDurable:
+            log.warning("sign-in: CR issued a session-only cookie; nothing captured")
+            self._set("failed", "not_durable")
+            return
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # the browser step must never take the server down
@@ -474,9 +491,12 @@ class SignInFlow:
             self._set("failed", f"browser_error:{type(exc).__name__}")
             return
         self._captured = True
-        log.info("sign-in: a token was captured; checking it against consumerreports.org")
+        log.info(
+            "sign-in: a token was captured (expires %s); checking it against consumerreports.org",
+            captured.expires_at,
+        )
         self._set("validating")
-        cookies = {DURABLE_COOKIE: token}
+        cookies = {DURABLE_COOKIE: captured.value}
         try:
             outcome = await self._validate(rt.settings, cookies)
         except asyncio.CancelledError:
@@ -495,7 +515,7 @@ class SignInFlow:
             log.info("sign-in: cancelled before the cookie was stored; nothing changed")
             return
         try:
-            rt.credentials.save(cookies)
+            rt.credentials.save(cookies, expires_at=captured.expires_at)
         except (OSError, ValueError) as exc:
             log.error(
                 "sign-in: could not store the session at %s (%s)",
@@ -531,6 +551,8 @@ class SignInFlow:
             data=E.AuthStatusData(
                 source=st["source"],
                 captured_at=st["captured_at"],
+                expires_at=st["expires_at"],
+                expiry_basis=st["expiry_basis"],
                 days_left_max=st["remaining_days_max"],
                 sign_in=self.phase,
                 reason=self.reason,

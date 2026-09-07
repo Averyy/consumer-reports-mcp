@@ -1,7 +1,16 @@
 """BOUNDARY 4: the only module that reads or writes the credential file and `CR_SESSION_COOKIE`.
 
-SPEC §6. Cookie-only: `hash` (durable, 365 d) and `userLicenses` (derived, rotates). Never a
-password, never a cookie value in a log line, a repr or a status report.
+SPEC §6. Cookie-only: `hash` (durable — 365 d when "remember me" took) and `userLicenses`
+(derived, rotates). Never a password, never a cookie value in a log line, a repr or a status
+report.
+
+The cookie's expiry is stored when it was MEASURED — `auth --browser` and `cr_sign_in` read it
+off the browser's jar — and only then. A paste carries no attributes, so that path stores none
+and the status falls back to `captured_at + DURABLE_COOKIE_DAYS`, an assumed upper bound. The
+two are told apart by `expiry_basis` everywhere the countdown is reported; before this the
+countdown was arithmetic on our own constant and would have read "364 days left" on a cookie
+that CR had already stopped honouring (a capture of 2026-09-05 died within a day, and nothing
+stored could say whether it had ever been durable).
 """
 
 from __future__ import annotations
@@ -22,11 +31,20 @@ SESSION_FILE_NAME = "session.json"
 ENV_VAR = "CR_SESSION_COOKIE"
 COOKIE_NAMES = ("hash", "userLicenses")
 DURABLE_COOKIE = "hash"
-DURABLE_COOKIE_DAYS = 365  # RECON §5: a fixed expiry from the mint, not a sliding window
+# RECON §5: the "remember me" mint gives `hash` a fixed 365-day expiry, not a sliding window.
+# This is the ASSUMED lifetime, used only when no expiry was measured (the paste path).
+DURABLE_COOKIE_DAYS = 365
 # `session_expiring:<days>` is emitted once the upper bound on the cookie's life is inside this
 # window (SPEC §6 *renewal*). Using the cookie never extends it; only a fresh sign-in does.
 EXPIRING_DAYS = 30
-SESSION_SCHEMA_VERSION = 1
+# 1: `{schema_version, cookies, captured_at}`. 2 adds `expires_at` — the cookie's own expiry as
+# the browser reported it, or null when the credential came from a paste. A version-1 file
+# loads as version 2 with `expires_at: null`, so nothing stored before needs rewriting.
+SESSION_SCHEMA_VERSION = 2
+# What `status()["expiry_basis"]` says about the countdown: read off the cookie the browser
+# issued (`measured`), or `captured_at + DURABLE_COOKIE_DAYS` (`assumed`, the paste path).
+EXPIRY_MEASURED = "measured"
+EXPIRY_ASSUMED = "assumed"
 # Injected with an explicit Domain so the re-mint redirect through secure.consumerreports.org
 # carries it (RECON §10a); a pasted `name=value` has no attributes of its own.
 COOKIE_DOMAIN = ".consumerreports.org"
@@ -196,7 +214,27 @@ def parse_cookie_input(text: str) -> dict[str, str]:
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return _iso(datetime.now(UTC))
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(text: object) -> datetime | None:
+    """A stored timestamp back to a datetime; None for anything that is not one."""
+    if not isinstance(text, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def expiry_from_posix(seconds: float) -> str:
+    """The stored form of a cookie expiry a browser reports as POSIX seconds."""
+    return _iso(datetime.fromtimestamp(float(seconds), tz=UTC))
 
 
 class CredentialStore:
@@ -210,6 +248,7 @@ class CredentialStore:
         self._env: Mapping[str, str] = env if env is not None else os.environ
         self.source: str | None = None
         self.captured_at: str | None = None
+        self.expires_at: str | None = None  # measured at capture, or None (paste, env, v1 file)
         self.rejected = False  # latched for the process on `credential_rejected` (D9)
         self.load_warning: str | None = None  # names a problem, never a value
         self._cookies: dict[str, str] = {}
@@ -227,6 +266,7 @@ class CredentialStore:
             self._cookies = parsed
             self.source = "env"
             self.captured_at = None
+            self.expires_at = None
             if not parsed:
                 self.load_warning = f"{ENV_VAR} is set but carries no hash or userLicenses cookie"
             return dict(self._cookies)
@@ -244,10 +284,14 @@ class CredentialStore:
                 self.source = "file"
                 captured = data.get("captured_at")
                 self.captured_at = captured if isinstance(captured, str) else None
+                # a version-1 file has no `expires_at`; an unparseable one is no expiry either
+                expires = data.get("expires_at")
+                self.expires_at = expires if _parse_iso(expires) is not None else None
                 return dict(self._cookies)
         self._cookies = {}
         self.source = None
         self.captured_at = None
+        self.expires_at = None
         return {}
 
     def _ensure_loaded(self) -> None:
@@ -260,6 +304,7 @@ class CredentialStore:
         self._cookies = {k: v for k, v in cookies.items() if k in COOKIE_NAMES and v}
         self.source = "memory"
         self.captured_at = None
+        self.expires_at = None
         self._loaded = True
 
     def _read_file(self) -> dict | None:
@@ -307,21 +352,30 @@ class CredentialStore:
         return env_value_set(self._env.get(ENV_VAR))
 
     # --- writing -------------------------------------------------------------
-    def save(self, cookies: Mapping[str, str]) -> None:
+    def save(self, cookies: Mapping[str, str], *, expires_at: str | None = None) -> None:
+        """Store the credential. `expires_at` is the durable cookie's OWN expiry as the browser
+        reported it (`expiry_from_posix`), when the caller measured one; a paste has none, and
+        the status then falls back to the assumed `DURABLE_COOKIE_DAYS` bound and says so."""
         kept = {k: v for k, v in cookies.items() if k in COOKIE_NAMES and v}
         if not kept:
             raise ValueError("nothing to save: no hash or userLicenses cookie present")
-        payload = {
-            "schema_version": SESSION_SCHEMA_VERSION,
-            "cookies": kept,
-            "captured_at": _now_iso(),
-        }
-        self._write_atomic(payload)
+        if expires_at is not None and _parse_iso(expires_at) is None:
+            raise ValueError("expires_at is not an ISO-8601 timestamp")
         self._cookies = kept
+        self.captured_at = _now_iso()
+        self.expires_at = expires_at
+        self._write_atomic(self._payload())
         self.source = "file"
-        self.captured_at = payload["captured_at"]
         self.rejected = False
         self._loaded = True
+
+    def _payload(self) -> dict:
+        return {
+            "schema_version": SESSION_SCHEMA_VERSION,
+            "cookies": dict(self._cookies),
+            "captured_at": self.captured_at,
+            "expires_at": self.expires_at,
+        }
 
     def _write_atomic(self, payload: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,6 +408,7 @@ class CredentialStore:
             self._cookies = {}
             self.source = None
             self.captured_at = None
+            self.expires_at = None
         return existed
 
     def record_rotation(self, name: str, value: str | None) -> bool:
@@ -369,37 +424,45 @@ class CredentialStore:
         self._cookies[name] = value
         if not self.captured_at:
             self.captured_at = _now_iso()
-        payload = {
-            "schema_version": SESSION_SCHEMA_VERSION,
-            "cookies": dict(self._cookies),
-            "captured_at": self.captured_at,
-        }
-        self._write_atomic(payload)
+        self._write_atomic(self._payload())  # `expires_at` rides along: a rotation is not a mint
         return True
 
     # --- inspection ----------------------------------------------------------
     def status(self) -> dict:
-        """No network, no values: tier, source, capture age, which cookies are present."""
+        """No network, no values: tier, source, capture age, the expiry and what it rests on,
+        which cookies are present."""
         cookies = self.cookies
+        now = datetime.now(UTC)
         age_days: float | None = None
-        if self.captured_at:
-            try:
-                captured = datetime.fromisoformat(self.captured_at.replace("Z", "+00:00"))
-                age_days = round((datetime.now(UTC) - captured).total_seconds() / 86400, 1)
-            except ValueError:
-                age_days = None
-        # `hash` carries a 365-day expiry and does NOT slide: a re-mint keeps the same value and
-        # the same expiry (RECON §5), so using it never buys more time. `captured_at` is when we
-        # stored it, which can be long after CR minted it, so this is an upper bound on the life
-        # left — never a promise.
+        captured = _parse_iso(self.captured_at)
+        if captured is not None:
+            age_days = round((now - captured).total_seconds() / 86400, 1)
+        # `remaining_days_max` is an upper bound either way — CR can revoke a cookie before its
+        # expiry — but what it is COUNTED FROM differs, and `expiry_basis` says which:
+        #   measured: the cookie's own `expires`, read off the browser's jar at capture. The
+        #             browser sign-in is the only path that sees it.
+        #   assumed:  `captured_at + DURABLE_COOKIE_DAYS`. `hash` from a "remember me" login
+        #             runs 365 days from the mint and does NOT slide (RECON §5), and a paste
+        #             carries no attributes, so this is the best a paste can say. Capture can
+        #             post-date the mint by any amount, and a cookie minted WITHOUT remember-me
+        #             is not durable at all, so this can overstate the life left by up to a
+        #             year — which is what made the 2026-09-05 capture unexplainable.
         remaining_days: float | None = None
-        if age_days is not None and DURABLE_COOKIE in cookies:
+        basis: str | None = None
+        expires = _parse_iso(self.expires_at) if DURABLE_COOKIE in cookies else None
+        if expires is not None:
+            remaining_days = round((expires - now).total_seconds() / 86400, 1)
+            basis = EXPIRY_MEASURED
+        elif age_days is not None and DURABLE_COOKIE in cookies:
             remaining_days = round(DURABLE_COOKIE_DAYS - age_days, 1)
+            basis = EXPIRY_ASSUMED
         return {
             "configured_tier": "member" if cookies else "anonymous",
             "source": self.source,
             "captured_at": self.captured_at,
             "age_days": age_days,
+            "expires_at": self.expires_at if expires is not None else None,
+            "expiry_basis": basis,
             "remaining_days_max": remaining_days,
             "hash_present": DURABLE_COOKIE in cookies,
             "userLicenses_present": "userLicenses" in cookies,
@@ -416,12 +479,13 @@ def default_store(config_dir: Path, env: Mapping[str, str] | None = None) -> Cre
 
 
 def expiry_warnings(store: CredentialStore, health: SessionState) -> list[str]:
-    """`session_expiring:<days>` once the cookie's upper-bound life is within `EXPIRING_DAYS`.
+    """`session_expiring:<days>` once the cookie's remaining life is within `EXPIRING_DAYS`.
 
     Only for a configured, not-yet-dead session: once CR has rejected the cookie the envelope
-    already says `session_expired`, and "expiring" on top of that is noise. `<days>` is the
-    `remaining_days_max` bound truncated and clamped at 0 — a stored capture date can post-date
-    CR's mint by any amount, so the real deadline is that day or earlier, never later."""
+    already says `session_expired`, and "expiring" on top of that is noise. `<days>` is
+    `remaining_days_max` truncated and clamped at 0 — counted from the cookie's own expiry when
+    the browser sign-in measured one, else from the capture date plus the assumed lifetime, in
+    which case the real deadline is that day or earlier, never later (`status()`)."""
     if not health.configured or health.health is SessionHealth.EXPIRED:
         return []
     left = store.status().get("remaining_days_max")

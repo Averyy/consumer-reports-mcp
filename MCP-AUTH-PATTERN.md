@@ -149,6 +149,8 @@ error:         always null
 data:
   source:        env | file | memory | null
   captured_at:   when the stored credential was captured
+  expires_at:    the credential's own expiry, when the browser reported one; else null
+  expiry_basis:  measured | assumed | null — what days_left_max counts from (see §8)
   days_left_max: an UPPER bound on its remaining life (see §8), or null
   sign_in:       idle | verifying | waiting | validating | active | refused | failed
   reason:        the last refusal's or failure's reason, or null
@@ -384,12 +386,20 @@ Three things, in order of importance:
    post-expiry response says: call the sign-in tool; or run the CLI; or update the env var if it
    came from there. An agent reading that can offer the user the right next step in the same
    turn.
-3. **Warn before it happens.** From the capture date and the cookie's fixed lifetime you have an
-   upper bound on the days left (capture can post-date the mint, so the real deadline is that day
-   *or earlier*). Inside a window — 30 days here — put `session_expiring:<days>` in `warnings[]`
-   on every tool that carries a session field, and expose the same number from the status tool
-   and the CLI. Stop emitting it once the session is already expired; the envelope says so then,
-   and "expiring" on top is noise. The env-var path has no capture date and gets no bound.
+3. **Warn before it happens — from the real expiry when you have it.** The browser hands you
+   the cookie's `expires` at capture; keep it and store it (`expires_at`), and count down from
+   it. Only for a paste, which carries no attributes, fall back to the capture date plus the
+   cookie's documented lifetime — an upper bound (capture can post-date the mint, so the real
+   deadline is that day *or earlier*), and label it so (`expiry_basis: assumed`). Do not skip
+   this: a version of this project read the expiry and threw it away, and a cookie that died
+   within a day of capture was reported as having 364 days left, with no way to tell afterwards
+   whether it had ever been durable. And a cookie the browser reports with NO expiry is a
+   session cookie — "remember me" did not take — so refuse it rather than store it under the
+   assumed bound. Inside a window — 30 days here — put `session_expiring:<days>` in
+   `warnings[]` on every tool that carries a session field, and expose the same number from the
+   status tool and the CLI. Stop emitting it once the session is already expired; the envelope
+   says so then, and "expiring" on top is noise. The env-var path has no capture date and gets
+   no bound.
 
 Then make renewal one gesture with **no flag**: a plain `sign_in`. A credential the host has
 rejected in this process, one the pre-flight check (§4) finds rejected, or one past its own

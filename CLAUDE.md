@@ -293,8 +293,9 @@ per category, no api-key, no pagination.
   `availability_stale`,
   `survey_flag_mismatch:<survey>`, `typeahead_unavailable`,
   `ratings_unavailable:<modelYearId>:<reason>`, `index_refresh_failed:<reason>`,
-  `session_expiring:<days>` (the stored cookie's upper-bound life is inside 30 days; on every
-  tool that carries `session`).
+  `session_expiring:<days>` (the stored cookie's remaining life — CR's own expiry when the
+  browser measured it, the assumed 365-day bound otherwise — is inside 30 days; on every tool
+  that carries `session`).
 - **IMPORTANT: `no_results:<params>` and `empty_category` are MUTUALLY EXCLUSIVE, and both
   are rendered by ONE function, `envelope.no_results`.** `empty_category` means CR published
   nothing; `no_results` means the caller's filters excluded everything from a populated
@@ -480,13 +481,36 @@ per category, no api-key, no pagination.
 - **`auth --browser` is an optional `[browser]` extra, and it NEVER touches the password field.**
   Launch installed Chrome (`channel="chrome"`, `headless=False`), a **fresh throwaway context** —
   never the user's profile, that is the same trust line that killed `rookiepy` — pre-tick
-  `setAutoLogin` (it mints the 365-day `hash`; without it the session dies in days), then poll
+  `setAutoLogin` (it mints the 365-day `hash`; without it the session dies in days) and
+  **re-assert it on EVERY poll** (`page.check` on a checked box is a no-op — no click, no
+  scroll, no focus; 250 ms budget so a form-less page never stalls the poll), then poll
   `context.cookies()` for `hash` and do nothing else. Never read, fill or submit username or
   password. **`context.cookies()` is every cookie in the window**: accept only a `hash` whose
   domain is `consumerreports.org` or a subdomain and whose value matches `BARE_HASH` (36
   chars); anything else keeps polling. A stray `hash` from another site used to become the
   capture and fail the flow permanently. Playwright obtains a cookie and exits; it is never on the data path and never a
   fallback for a blocked fetch.
+- **IMPORTANT: the capture is the cookie AND its `expires`, and a SESSION cookie is never the
+  capture.** `capture_hash` returns `Capture(value, expires_at)`; Playwright reports `expires`
+  as POSIX seconds or `-1` for a session cookie, and `-1` (or an unreadable field) means
+  "remember me" did NOT take — CR then issues a session that dies in days (`RECON.md` §5). After
+  `DURABLE_GRACE_S` (5 s) for the durable one to land on a later redirect hop, that is
+  `NotDurable` → `reason: "not_durable"`, nothing stored, no probe spent. Before this the value
+  alone was returned, the expiry the browser had literally handed over was discarded, and
+  `session.json` stored only `captured_at` — so **a cookie captured 2026-09-05 died within
+  about a day while `remaining_days_max` said 364**, and nothing could say whether it had ever
+  been durable. That remains unknowable for that capture. Measured 2026-09-07 while fixing it:
+  CR renders `setAutoLogin` `checked="checked"` server-side on BOTH the plain login page and
+  the `?error` page a failed submit lands on, the form is a plain `POST /ec/login`, and
+  `content-login.*.js` never touches the box — so "the tick is lost on a re-render" is NOT
+  confirmed; the per-poll re-tick covers a user un-ticking it or CR changing its default.
+- **The measured expiry is STORED (`expires_at`, session schema 2) and the renewal signal
+  counts from it.** `CredentialStore.save(cookies, expires_at=)`; `status()` reports
+  `expires_at`, `expiry_basis` (`measured` / `assumed`) and `remaining_days_max` — days to
+  `expires_at` when measured, else `captured_at + 365` (the paste path carries no attributes;
+  a schema-1 file loads with `expires_at: null` and `load()` never writes). Both are upper
+  bounds (CR can revoke early), but only one is CR's own date, and `cr_auth_status` /
+  `auth --status` say which. A rotation write-back keeps `expires_at`: it is not a mint.
 - **IMPORTANT: the sign-in window must NOT advertise the automation.** Launch with
   `args=["--disable-blink-features=AutomationControlled"]`,
   `ignore_default_args=["--enable-automation"]`, and `new_context(no_viewport=True)`. CR's login
@@ -576,7 +600,7 @@ per category, no api-key, no pagination.
   a guard that refuses on it refuses a DEAD cookie forever with a message claiming it works
   (that shipped once; so did the opposite defect, an `active`-only guard that opened a window on
   every start). Unforced: `none`/`expired` proceed; `days_left_max <= 0` proceeds whatever
-  `session` says (the project's own bound says it cannot be live); `active` refuses
+  `session` says (the bound — measured or assumed — says it cannot be live); `active` refuses
   `session_active` (verified live THIS process — the message may say so); `unverified` starts
   the task in a `verifying` phase that runs `validate_cookies` on the STORED cookie — the
   verdict goes to `health.on_probe_verdict()`: `member` → `active` and `refused /
@@ -609,10 +633,13 @@ per category, no api-key, no pagination.
   retried, not skipped — skipped, its categories are `not_in_index` for a TTL. wafer 0.5.0 has
   no `close()`; `__aexit__` is the only teardown and it interrupts nothing in flight.
 - **Renewal: `session_expiring:<days>` fires on every tool carrying `session` inside 30 days**
-  (`remaining_days_max`, truncated, clamped at 0; file source only; not once `expired`) —
-  `cr_sign_in` and `cr_auth_status` included — and the `session_expired` notice names
-  `cr_sign_in`, then the CLI, then the env var. Renewal is a plain `cr_sign_in`: a rejected or
-  past-bound cookie proceeds unforced; `force` is for renewing early.
+  (`remaining_days_max` — from `expires_at` when measured, from `captured_at + 365` when not —
+  truncated, clamped at 0; file source only; not once `expired`) — `cr_sign_in` and
+  `cr_auth_status` included — and the `session_expired` notice names `cr_sign_in`, then the
+  CLI, then the env var. Renewal is a plain `cr_sign_in`: a rejected or past-bound cookie
+  proceeds unforced; `force` is for renewing early. The assumed bound is the only signal a
+  PASTE can have, and it is blind to a cookie that was never durable — which is why the
+  browser path refuses one (above).
 - **The `.mcpb` bundle's manifest `version` and `tools` are GENERATED** by
   `scripts/build_bundle.py` from `pyproject.toml` and `server.DESCRIPTIONS`; the template in
   `bundle/manifest.json` carries neither, and a versioned template is refused. **`uv sync` skips

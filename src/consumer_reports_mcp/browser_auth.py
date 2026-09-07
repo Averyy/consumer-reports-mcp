@@ -3,9 +3,19 @@
 
 Open an installed Chromium-family browser on Consumer Reports' own sign-in page in a fresh,
 throwaway context that does not advertise the automation (`LAUNCH_ARGS`, `CONTEXT_OPTIONS` —
-CR's form runs an invisible hCaptcha that keys on `navigator.webdriver`), pre-tick "remember me"
-(it mints the durable 365-day `hash`), then wait for the `hash` cookie and do nothing else. This
-module never reads, fills or submits any form field, and it is never on the data path.
+CR's form runs an invisible hCaptcha that keys on `navigator.webdriver`), keep "remember me"
+ticked (it is what mints the durable 365-day `hash`), then wait for the `hash` cookie and do
+nothing else. This module never reads, fills or submits any form field, and it is never on the
+data path.
+
+The capture is the cookie AND its expiry. `context.cookies()` reports `expires` — POSIX seconds,
+or `-1` for a session cookie — and a `hash` with no expiry is the "remember me" mint NOT having
+taken: CR then issues a session that dies in days (`RECON.md` §5), and stored under the assumed
+365-day bound it reads as a year of life right up to the day it stops working. That happened: a
+cookie captured 2026-09-05 was dead within a day and the status said 364 days, and because the
+expiry had been read and discarded here, nothing could say whether it had ever been durable. So
+a session-only `hash` is never the capture (`NotDurable`), and the expiry travels with the value
+into the session file (`credentials.CredentialStore.save(expires_at=)`).
 
 The window must close on EVERY exit path — success, timeout, the user closing it, `cancel()`,
 task cancellation and interpreter shutdown — and closing it must never hang the process.
@@ -33,6 +43,7 @@ import asyncio
 import atexit
 import base64
 import contextlib
+import dataclasses
 import logging
 import os
 import shutil
@@ -44,12 +55,21 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping
 from types import MappingProxyType
 from typing import Any
 
-from .credentials import BARE_HASH
+from .credentials import BARE_HASH, expiry_from_posix
 
 log = logging.getLogger(__name__)
 
 LOGIN_URL = "https://secure.consumerreports.org/ec/login"
 REMEMBER_ME_SELECTOR = "input[name='setAutoLogin']"
+# The tick is re-asserted on EVERY poll, not once at launch. Measured 2026-09-07 on the real
+# page: CR renders the box `checked="checked"` server-side on the plain page and on the
+# `?error` page a failed submit lands on, the form is a plain `POST /ec/login`, and the login
+# script never touches the box — so a re-render restores the tick rather than losing it. What a
+# one-time tick did not cover is the user un-ticking it before submitting, or CR changing the
+# default. `page.check` on an already-checked box returns without clicking, scrolling or
+# focusing, so the re-assertion is invisible while the user types; the budget keeps a poll
+# from stalling on a page that has no form (mid-navigation, or once signed in).
+REMEMBER_ME_RECHECK_TIMEOUT_MS = 250
 TOKEN_COOKIE = "hash"
 TOKEN_DOMAIN = "consumerreports.org"  # the cookie's domain must be this or a subdomain of it
 INSTALL_HINT = (
@@ -120,6 +140,27 @@ class CaptureTimeout(RuntimeError):
 class WindowClosed(CaptureTimeout):
     """The user closed the window before a token appeared — a `CaptureTimeout` to every
     existing caller, distinguishable for the ones that want to say so."""
+
+
+class NotDurable(RuntimeError):
+    """CR issued a `hash`, but as a SESSION cookie (no expiry): "remember me" did not take, so
+    the credential would die in days while a stored status claimed a year. Not a
+    `CaptureTimeout` — a token did appear — and nothing is captured."""
+
+
+# How long to keep polling after a session-only `hash` is first seen before giving up on a
+# durable one: the login's redirect hops can set cookies across polls, and the durable cookie
+# may land a moment after the session one. Nothing is captured either way until it does.
+DURABLE_GRACE_S = 5.0
+
+
+@dataclasses.dataclass(frozen=True)
+class Capture:
+    """What `capture_hash` returns: the token and the expiry the browser reported for it. The
+    value is excluded from `repr`, so a logged or formatted `Capture` never carries it."""
+
+    value: str = dataclasses.field(repr=False)
+    expires_at: str  # ISO-8601 UTC, `credentials.expiry_from_posix`; never None — see NotDurable
 
 
 def extra_installed() -> bool:
@@ -482,14 +523,41 @@ def _is_token(cookie: dict) -> bool:
     return bool(BARE_HASH.match(str(cookie.get("value") or "")))
 
 
+def _expires(cookie: dict) -> float | None:
+    """The cookie's expiry as POSIX seconds, or None for a session cookie. Playwright reports
+    `expires: -1` for one; a missing or unreadable field is treated the same way, because an
+    expiry that cannot be read cannot be stored as measured."""
+    try:
+        exp = float(cookie.get("expires"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return exp if exp > 0 else None
+
+
+async def _keep_remember_me(page: Any) -> bool:
+    """Re-assert the tick; True when the box is confirmed checked now. Never fails the poll:
+    a page with no form (mid-navigation, or once signed in) simply answers False."""
+    try:
+        await page.check(REMEMBER_ME_SELECTOR, timeout=REMEMBER_ME_RECHECK_TIMEOUT_MS)
+    except Exception:
+        return False
+    return True
+
+
 async def capture_hash(
     timeout_s: int = 300,
     *,
     playwright_factory: Any | None = None,
     poll_s: float = 1.0,
     on_launch: Callable[[str], None] | None = None,
-) -> str:
-    """Return the `hash` cookie value once the user has signed in, or raise.
+) -> Capture:
+    """Return the `hash` cookie and its expiry once the user has signed in, or raise.
+
+    Only a DURABLE `hash` is the capture. A `hash` the browser reports without an expiry is a
+    session cookie — "remember me" did not take — and after `DURABLE_GRACE_S` without a durable
+    one arriving the poll ends in `NotDurable`, which stores nothing: the alternative, storing
+    it under the assumed 365-day bound, is exactly the credential-dies-overnight-while-the-
+    status-says-a-year failure this module exists to prevent.
 
     `on_launch(label)` is called as soon as a browser window is up, so a caller that must answer
     within seconds (`cr_sign_in`) can report which browser opened without waiting for the user.
@@ -521,7 +589,10 @@ async def capture_hash(
                     type(exc).__name__,
                 )
             capture_deadline = time.monotonic() + timeout_s
+            session_only_since: float | None = None  # when a session-only `hash` first showed
             while time.monotonic() < capture_deadline:
+                # the guard is re-applied every poll, not once: see REMEMBER_ME_RECHECK_TIMEOUT_MS
+                await _keep_remember_me(page)
                 try:
                     cookies = await context.cookies()
                 except Exception as exc:  # the window was closed: a clean "nothing captured"
@@ -530,8 +601,30 @@ async def capture_hash(
                         "nothing was captured"
                     ) from exc
                 for cookie in cookies:
-                    if _is_token(cookie):
-                        return str(cookie["value"])
+                    if not _is_token(cookie):
+                        continue
+                    expires = _expires(cookie)
+                    if expires is not None:
+                        return Capture(
+                            value=str(cookie["value"]), expires_at=expiry_from_posix(expires)
+                        )
+                    if session_only_since is None:
+                        session_only_since = time.monotonic()
+                        log.warning(
+                            "sign-in: CR issued a session-only `hash` (no expiry); waiting %.0f s "
+                            "for a durable one",
+                            DURABLE_GRACE_S,
+                        )
+                if (
+                    session_only_since is not None
+                    and time.monotonic() - session_only_since >= DURABLE_GRACE_S
+                ):
+                    raise NotDurable(
+                        "Consumer Reports issued a session-only cookie — one with no expiry, "
+                        'which means "remember me" did not take and the session would die '
+                        "within days — so nothing was captured. Sign in again leaving "
+                        '"Remember Me" ticked.'
+                    )
                 await asyncio.sleep(poll_s)
             raise CaptureTimeout(
                 f"no session token appeared within {timeout_s} s — nothing was captured"

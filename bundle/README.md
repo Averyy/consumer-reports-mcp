@@ -37,6 +37,7 @@ The optional **Session cookie** field in the extension's settings is only for ma
 browser window can open. Anything typed there is passed as `CR_SESSION_COOKIE`, which overrides
 the stored session — so `cr_sign_in` refuses while it is set, and says where to clear it.
 
-The cookie lasts 365 days from the sign-in and using it never extends that. Inside the last 30
+A "remember me" cookie lasts 365 days from the sign-in and using it never extends that; the
+sign-in records the cookie's real expiry and refuses a session-only one. Inside the last 30
 days every response carries `session_expiring:<days>`; when it lapses, responses say
 `session_expired` and name `cr_sign_in` as the fix.

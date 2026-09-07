@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from consumer_reports_mcp import cli
+from consumer_reports_mcp.browser_auth import Capture
 from consumer_reports_mcp.config import AUTH_PROBE_PATH, WWW
 from consumer_reports_mcp.credentials import CredentialStore
 from consumer_reports_mcp.runtime import build_runtime
@@ -61,11 +62,13 @@ class CliHarness:
 
 def test_status_reports_how_much_life_the_cookie_has_left(tmp_path):
     """`hash` expires 365 days after the mint and using it never extends that, so age alone
-    leaves the user to do the arithmetic on a credential that dies silently."""
+    leaves the user to do the arithmetic on a credential that dies silently. A paste carries
+    no expiry, so this countdown is ASSUMED, and the status says so."""
     h = CliHarness(tmp_path)
     CredentialStore(h.session_file, env={}).save({"hash": HASH})
     code, out, err = h.run(["auth", "--status"])
     assert code == 0 and "at most 365 days left" in out and "warning" not in err
+    assert "assumed" in out and "upper bound" in out
 
     # wind the capture back to 350 days ago: still valid, but worth renewing
     path = h.session_file
@@ -80,7 +83,34 @@ def test_status_reports_how_much_life_the_cookie_has_left(tmp_path):
     data["captured_at"] = (datetime.now(UTC) - timedelta(days=400)).strftime("%Y-%m-%dT%H:%M:%SZ")
     path.write_text(json.dumps(data))
     _code, out, _err = h.run(["auth", "--status"])
-    assert "past its expiry" in out and "serve anonymously" in out
+    assert "past its expiry" in out and "serve anonymously" in out and "assumed" in out
+
+
+def test_status_reports_a_measured_expiry_as_cr_s_own(tmp_path):
+    """A browser capture records the cookie's real expiry; the status counts from it and
+    labels it, so a user can tell a measurement from the paste path's assumption. A
+    version-1 `session.json` (no `expires_at`) still loads, as assumed."""
+    h = CliHarness(tmp_path)
+    expires = (datetime.now(UTC) + timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    CredentialStore(h.session_file, env={}).save({"hash": HASH}, expires_at=expires)
+    code, out, err = h.run(["auth", "--status"])
+    assert code == 0 and f"expiry: {expires}" in out and "200 days left" in out
+    assert "CR's own expiry" in out and "assumed" not in out and "warning" not in err
+    # inside the window it warns, counting from the measured date, not the capture date
+    soon = (datetime.now(UTC) + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    CredentialStore(h.session_file, env={}).save({"hash": HASH}, expires_at=soon)
+    _code, out, err = h.run(["auth", "--status"])
+    assert "3 days left" in out and "renew soon" in err
+    past = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    CredentialStore(h.session_file, env={}).save({"hash": HASH}, expires_at=past)
+    _code, out, _err = h.run(["auth", "--status"])
+    assert "past its expiry" in out and past in out and "CR's own" in out
+    # a file written before expiries were recorded
+    h.session_file.write_text(
+        json.dumps({"schema_version": 1, "cookies": {"hash": HASH}, "captured_at": past})
+    )
+    _code, out, _err = h.run(["auth", "--status"])
+    assert "at most 363 days left" in out and "assumed" in out
 
 
 class _Tty(io.StringIO):
@@ -241,15 +271,44 @@ def test_browser_flag_success_goes_through_the_same_validate_and_save(tmp_path, 
     out, err = io.StringIO(), io.StringIO()
     seen = []
 
+    expires = (datetime.now(UTC) + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     def capture(timeout):
         seen.append(timeout)
-        return HASH
+        return Capture(value=HASH, expires_at=expires)
 
     code = cli.auth_command(
         args, h.env, io.StringIO(), out, err, runtime_factory=h.factory, capture=capture
     )
     assert code == 0 and seen == [7] and "member session active" in out.getvalue()
-    assert json.loads(h.session_file.read_text())["cookies"] == {"hash": HASH}
+    stored = json.loads(h.session_file.read_text())
+    assert stored["cookies"] == {"hash": HASH} and stored["expires_at"] == expires
+    assert f"expires {expires}" in out.getvalue() and HASH not in out.getvalue()
+
+
+def test_browser_flag_reports_a_session_only_cookie_and_stores_nothing(tmp_path):
+    h = CliHarness(tmp_path)
+    args = cli.build_parser().parse_args(["auth", "--browser"])
+    out, err = io.StringIO(), io.StringIO()
+
+    def capture(timeout):
+        from consumer_reports_mcp.browser_auth import NotDurable
+
+        raise NotDurable("Consumer Reports issued a session-only cookie — nothing was captured")
+
+    code = cli.auth_command(
+        args, h.env, io.StringIO(), out, err, runtime_factory=h.factory, capture=capture
+    )
+    assert code == 2 and "session-only" in err.getvalue() and not h.session_file.exists()
+
+
+def test_paste_path_stores_no_expiry_and_says_the_bound_is_assumed(tmp_path, c37162):
+    h = CliHarness(tmp_path)
+    h.probe_page(c37162, subscriber="true")
+    code, out, _err = h.run(["auth"], stdin=HASH + "\n")
+    assert code == 0 and "assumed 365 days" in out and "upper bound" in out
+    stored = json.loads(h.session_file.read_text())
+    assert stored["schema_version"] == 2 and stored["expires_at"] is None
 
 
 def test_main_help_lists_auth(capsys):

@@ -89,12 +89,67 @@ def test_file_source_loads_schema(store_path: Path):
     s = CredentialStore(store_path, env={})
     s.save({"hash": HASH, "userLicenses": LICENSES, "userToken": "dropped"})
     data = json.loads(store_path.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert set(data["cookies"]) == {"hash", "userLicenses"}
     assert data["captured_at"].endswith("Z")
+    assert data["expires_at"] is None  # not measured: the key is there, and null
     fresh = CredentialStore(store_path, env={})
     assert fresh.load() == {"hash": HASH, "userLicenses": LICENSES}
-    assert fresh.source == "file"
+    assert fresh.source == "file" and fresh.expires_at is None
+
+
+def test_a_measured_expiry_is_stored_used_and_survives_a_rotation(store_path: Path):
+    """The browser sign-in reads the cookie's own expiry off the jar; stored, it is what the
+    countdown counts from — `captured_at` is when WE stored it, which says nothing about
+    when CR stops honouring it. A rotation write-back is not a mint and keeps it."""
+    from datetime import UTC, datetime, timedelta
+
+    from consumer_reports_mcp.credentials import expiry_from_posix
+
+    expires_dt = datetime.now(UTC) + timedelta(days=200)
+    expires = expiry_from_posix(expires_dt.timestamp())
+    assert expires.endswith("Z") and expires.startswith(expires_dt.strftime("%Y-%m-%dT"))
+    s = CredentialStore(store_path, env={})
+    s.save({"hash": HASH}, expires_at=expires)
+    assert json.loads(store_path.read_text())["expires_at"] == expires
+    st = s.status()
+    assert st["expires_at"] == expires and st["expiry_basis"] == "measured"
+    assert st["remaining_days_max"] == 200 and st["age_days"] == 0
+    # reloaded, and unmoved by a capture date that says otherwise
+    data = json.loads(store_path.read_text())
+    data["captured_at"] = (datetime.now(UTC) - timedelta(days=300)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    store_path.write_text(json.dumps(data))
+    fresh = CredentialStore(store_path, env={})
+    fresh.load()
+    assert fresh.expires_at == expires and fresh.status()["remaining_days_max"] == 200
+    assert fresh.record_rotation("userLicenses", "new") is True
+    assert json.loads(store_path.read_text())["expires_at"] == expires
+    # only the durable cookie has a measured expiry to report
+    lic = CredentialStore(store_path.parent / "lic.json", env={})
+    lic.save({"userLicenses": "x"}, expires_at=expires)
+    assert lic.status()["expiry_basis"] is None and lic.status()["remaining_days_max"] is None
+    with pytest.raises(ValueError):
+        CredentialStore(store_path.parent / "bad.json", env={}).save(
+            {"hash": HASH}, expires_at="next year"
+        )
+
+
+def test_a_version_one_file_loads_as_assumed(store_path: Path):
+    """`session.json` written before expiries were recorded has no `expires_at`: it loads,
+    and the countdown falls back to the assumed bound and says so. An unparseable
+    `expires_at` is no expiry either, never a crash."""
+    store_path.parent.mkdir(parents=True)
+    v1 = {"schema_version": 1, "cookies": {"hash": HASH}, "captured_at": "2026-09-05T00:00:00Z"}
+    store_path.write_text(json.dumps(v1))
+    s = CredentialStore(store_path, env={})
+    assert s.load() == {"hash": HASH} and s.expires_at is None
+    st = s.status()
+    assert st["expiry_basis"] == "assumed" and st["expires_at"] is None
+    assert st["remaining_days_max"] == round(365 - st["age_days"], 1)
+    assert store_path.read_text() == json.dumps(v1)  # load never writes
+    store_path.write_text(json.dumps(dict(v1, schema_version=2, expires_at="whenever")))
+    s.load()
+    assert s.expires_at is None and s.status()["expiry_basis"] == "assumed"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="mode bits are not meaningful on Windows")
@@ -327,7 +382,11 @@ def test_expiry_warning_fires_inside_thirty_days_and_only_for_a_live_file_sessio
     s = CredentialStore(store_path, env={})
     s.save({"hash": HASH})
     health = SessionState(configured=True)
-    assert expiry_warnings(s, health) == []  # 365 days left
+    assert expiry_warnings(s, health) == []  # 365 days left, assumed
+    # a measured expiry inside the window warns at once, whatever the capture date says
+    s.save({"hash": HASH}, expires_at=(datetime.now(UTC) + timedelta(days=12)).isoformat())
+    assert expiry_warnings(s, health) == ["session_expiring:12"]
+    s.save({"hash": HASH})
 
     def age(days: int) -> None:
         data = json.loads(store_path.read_text())

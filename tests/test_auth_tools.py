@@ -19,7 +19,9 @@ from consumer_reports_mcp.auth_tools import SignInFlow, cr_auth_status, cr_sign_
 from consumer_reports_mcp.browser_auth import (
     BrowserExtraMissing,
     BrowserNotFound,
+    Capture,
     CaptureTimeout,
+    NotDurable,
     WindowClosed,
 )
 from consumer_reports_mcp.cars.tools import cr_car_search
@@ -41,6 +43,10 @@ PROBE_URL = WWW + AUTH_PROBE_PATH
 LIVE_PHASES = ("verifying", "waiting", "validating")
 
 
+def iso_days_from_now(days: float) -> str:
+    return (datetime.now(UTC) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def make_capture(
     token: str = HASH,
     *,
@@ -48,8 +54,12 @@ def make_capture(
     gate: asyncio.Event | None = None,
     error: Exception | None = None,
     before_launch: Exception | None = None,
+    expires_at: str | None = None,
 ):
+    """A fake `capture_hash`: the token with the expiry the browser reported — 365 days out
+    unless the test says otherwise, as the "remember me" mint issues it."""
     calls: list[dict] = []
+    expires_at = expires_at or iso_days_from_now(365)
 
     async def capture(*, timeout_s: int, on_launch):
         calls.append({"timeout_s": timeout_s})
@@ -61,7 +71,7 @@ def make_capture(
             await gate.wait()
         if error is not None:
             raise error
-        return token
+        return Capture(value=token, expires_at=expires_at)
 
     capture.calls = calls  # type: ignore[attr-defined]
     return capture
@@ -170,6 +180,10 @@ async def test_sign_in_answers_fast_and_status_reports_the_outcome(tmp_path):
     if sys.platform != "win32":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert st.session == "active" and st.data.source == "file" and st.data.days_left_max == 365
+    # the browser reported the cookie's expiry, and it was stored — so the countdown is
+    # measured, not the assumed 365-day arithmetic on our own constant
+    assert st.data.expiry_basis == "measured" and st.data.expires_at
+    assert json.loads(path.read_text())["expires_at"] == st.data.expires_at
     assert h.rt.transport.cookie_configured is True and h.rt.transport.adoptions == 1
     assert h.rt.health.health is SessionHealth.ACTIVE
     assert capture.calls == [{"timeout_s": 300}]
@@ -711,12 +725,13 @@ async def test_status_long_poll_returns_on_change_and_is_capped_under_desktops_l
 
 
 async def test_status_reports_days_left_and_the_expiring_warning(tmp_path):
-    h = RuntimeHarness(tmp_path, cookie=True)
+    h = RuntimeHarness(tmp_path, cookie=True)  # stored without an expiry, like a paste
     gate = asyncio.Event()
     flow_for(h, capture=make_capture(gate=gate), validate=make_validate())
     st = await cr_auth_status(h.rt)
     assert st.data.source == "file" and st.data.days_left_max == 365 and st.warnings == []
     assert st.session == "unverified" and st.data.captured_at
+    assert st.data.expiry_basis == "assumed" and st.data.expires_at is None
     age_stored_cookie(h, 350)
     st = await cr_auth_status(h.rt)
     assert st.data.days_left_max == 15 and st.warnings == ["session_expiring:15"]
@@ -730,9 +745,54 @@ async def test_status_reports_days_left_and_the_expiring_warning(tmp_path):
     gate.set()
     st = await settle(h)
     assert st.data.sign_in == "active" and st.warnings == []  # a fresh 365-day cookie
-    assert st.data.days_left_max == 365
+    assert st.data.days_left_max == 365 and st.data.expiry_basis == "measured"
     h.rt.health.on_rejected()
     assert (await cr_categories(h.rt)).warnings == []  # already session_expired: not noise
+
+
+async def test_a_measured_expiry_drives_the_countdown_not_the_capture_date(tmp_path):
+    """The renewal signal counts from the expiry the browser reported when there is one. A
+    cookie CR issued with 10 days of life warns `session_expiring:10` on the day it is stored —
+    the assumed arithmetic said 365 for exactly such a cookie, right up to the day it died."""
+    h = RuntimeHarness(tmp_path)
+    capture = make_capture(expires_at=iso_days_from_now(10))
+    flow_for(h, capture=capture, validate=make_validate("member"))
+    await cr_sign_in(h.rt)
+    st = await settle(h)
+    assert st.data.sign_in == "active" and st.data.expiry_basis == "measured"
+    assert st.data.days_left_max == 10 and st.warnings == ["session_expiring:10"]
+    assert "session_expiring:10" in (await cr_categories(h.rt)).warnings
+    # winding the CAPTURE date back changes nothing: the countdown is not arithmetic on it
+    age_stored_cookie(h, 300)
+    st = await cr_auth_status(h.rt)
+    assert st.data.days_left_max == 10 and st.warnings == ["session_expiring:10"]
+    # and one already past its measured expiry is renewed without force, like a past-bound one
+    h2 = RuntimeHarness(tmp_path / "two")
+    flow_for(h2, capture=make_capture(expires_at=iso_days_from_now(-1)), validate=make_validate())
+    await cr_sign_in(h2.rt)
+    st = await settle(h2)
+    assert st.data.sign_in == "active" and st.data.days_left_max == -1
+    assert st.warnings == ["session_expiring:0"]
+    capture2 = make_capture()
+    flow_for(h2, capture=capture2, validate=make_validate())
+    assert (await cr_sign_in(h2.rt)).data.status == "waiting" and len(capture2.calls) == 1
+
+
+async def test_a_session_only_cookie_is_a_named_failure_that_stores_nothing(tmp_path):
+    """`NotDurable` from the capture — CR issued a `hash` with no expiry, "remember me" did
+    not take — is `failed / not_durable` with the fix in the text, and nothing is stored or
+    validated: stored under the assumed bound it would have read as a year of life."""
+    h = RuntimeHarness(tmp_path)
+    validate = make_validate("member")
+    flow_for(h, capture=make_capture(error=NotDurable("session-only")), validate=validate)
+    out = await cr_sign_in(h.rt)
+    assert out.data.status == "failed" and out.data.reason == "not_durable"
+    assert "Remember Me" in out.data.instructions
+    assert "nothing was captured" in out.data.instructions
+    assert validate.seen == [] and not h.rt.credentials.path.exists()
+    assert h.rt.health.health is SessionHealth.NONE and h.rt.transport.adoptions == 0
+    st = await cr_auth_status(h.rt)
+    assert st.data.sign_in == "failed" and st.data.reason == "not_durable"
 
 
 # --------------------------------------------------------------------------- hygiene

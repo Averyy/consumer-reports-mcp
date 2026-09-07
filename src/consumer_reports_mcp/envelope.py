@@ -28,6 +28,10 @@ CarAvailability = Literal["available", "absent"]
 SignInStatus = Literal["waiting", "verifying", "in_progress", "refused", "failed"]
 SignInPhase = Literal["idle", "verifying", "waiting", "validating", "active", "refused", "failed"]
 CredentialSource = Literal["env", "file", "memory"]
+# What `days_left_max` is counted from: the cookie's own expiry as the browser reported it at
+# capture (`measured`), or the capture date plus the assumed 365-day lifetime (`assumed` — the
+# paste path, which carries no expiry, and any session stored before expiries were recorded).
+ExpiryBasis = Literal["measured", "assumed"]
 
 # `auth_state` is derived from the SERVED row (`auth_state()` below), so on the three products
 # envelopes that carry it the value is `null` exactly when no row was served — an error envelope
@@ -655,7 +659,8 @@ class SignInData(Strict):
     )
     reason: str | None = Field(
         description="machine-readable cause for refused/failed — session_active, env_override, "
-        "browser_extra_missing, browser_not_found, window_closed, capture_timeout, offline, "
+        "browser_extra_missing, browser_not_found, window_closed, capture_timeout, "
+        "not_durable (CR issued a session-only cookie: remember-me did not take), offline, "
         "session_expired, credential_rejected, could_not_check:<reason>, save_failed:<type>, "
         "internal_error:<type>"
     )
@@ -683,9 +688,20 @@ class AuthStatusData(Strict):
         "memory (a validation in progress), or null when anonymous"
     )
     captured_at: str | None
+    expires_at: str | None = Field(
+        description="the stored cookie's own expiry as the browser reported it at capture; "
+        "null when it was not measured (a pasted cookie, or one stored before expiries were "
+        "recorded)"
+    )
+    expiry_basis: ExpiryBasis | None = Field(
+        description="what days_left_max is counted from: measured (CR's own expiry, from "
+        "expires_at) or assumed (365 days from the capture date — an upper bound that can "
+        "overstate the life left by up to a year); null when there is no countdown"
+    )
     days_left_max: float | None = Field(
-        description="365 minus the stored cookie's age: an UPPER bound on its remaining life, "
-        "never a promise; null unless the cookie came from the stored file"
+        description="days until expires_at when measured, else 365 minus the cookie's age: an "
+        "UPPER bound on its remaining life either way (CR can revoke a cookie early), never a "
+        "promise; null unless the cookie came from the stored file"
     )
     sign_in: SignInPhase = Field(
         description="idle: nothing in flight; verifying: the stored session is being checked "

@@ -12,12 +12,23 @@ import asyncio
 import os
 import sys
 from collections.abc import Callable
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from .auth_tools import validate_cookies
 from .config import ConfigError, Settings
-from .credentials import DURABLE_COOKIE, ENV_VAR, CredentialStore, default_store, parse_cookie_input
+from .credentials import (
+    DURABLE_COOKIE,
+    DURABLE_COOKIE_DAYS,
+    ENV_VAR,
+    EXPIRY_MEASURED,
+    CredentialStore,
+    default_store,
+    parse_cookie_input,
+)
 from .runtime import Runtime, configure_logging
+
+if TYPE_CHECKING:
+    from .browser_auth import Capture
 
 PASTE_HELP = (
     "Paste a Consumer Reports session token and press Enter.\n"
@@ -78,7 +89,7 @@ def auth_command(
     stderr: TextIO,
     *,
     runtime_factory: Callable[[Settings, CredentialStore], Runtime] | None = None,
-    capture: Callable[[int], str] | None = None,
+    capture: Callable[[int], Capture] | None = None,
 ) -> int:
     try:
         settings = Settings(env=env)
@@ -104,14 +115,16 @@ def auth_command(
             file=stderr,
         )
         try:
-            token = (capture or _browser_capture)(args.timeout)
-        except Exception as exc:  # BrowserExtraMissing, BrowserNotFound, CaptureTimeout, …
+            captured = (capture or _browser_capture)(args.timeout)
+        except Exception as exc:  # BrowserExtraMissing, BrowserNotFound, NotDurable, timeout, …
             print(str(exc), file=stderr)
             return 2
-        cookies = {DURABLE_COOKIE: token}
+        cookies = {DURABLE_COOKIE: captured.value}
+        expires_at: str | None = captured.expires_at  # measured: the browser reported it
     else:
         text = _read_paste(args.paste_file, stdin, stderr)
         cookies = parse_cookie_input(text)
+        expires_at = None  # a paste carries no attributes: the status assumes the 365-day bound
         if not cookies:
             print("no `hash` or `userLicenses` cookie found in the paste", file=stderr)
             print(PASTE_HELP, file=stderr)
@@ -132,8 +145,16 @@ def auth_command(
     )
     outcome = _validate(settings, cookies, runtime_factory)
     if outcome == "member":
-        store.save(cookies)
+        store.save(cookies, expires_at=expires_at)
         print("member session active", file=stdout)
+        if expires_at is not None:
+            print(f"expires {expires_at} (CR's own expiry, read from the browser)", file=stdout)
+        else:
+            print(
+                f"expiry not known from a paste — assumed {DURABLE_COOKIE_DAYS} days from now, an "
+                "upper bound (`auth --browser` records the real one)",
+                file=stdout,
+            )
         print(f"stored at {store.path} (0600)", file=stderr)
         return 0
     if outcome.startswith("could_not_check:"):
@@ -153,21 +174,37 @@ def _status(store: CredentialStore, stdout: TextIO, stderr: TextIO) -> int:
         print(f"captured: {st['captured_at']} ({st['age_days']} days ago)", file=stdout)
     left = st.get("remaining_days_max")
     if left is not None:
+        # the countdown is read off CR's own expiry when the browser sign-in measured one, and
+        # only assumed — 365 days from capture — for a paste, which carries no expiry
+        measured = st.get("expiry_basis") == EXPIRY_MEASURED
         if left <= 0:
+            basis = (
+                f"{st['expires_at']}, CR's own"
+                if measured
+                else f"assumed: {DURABLE_COOKIE_DAYS} days from capture"
+            )
             print(
-                "expiry: the 365-day cookie is past its expiry — CR will reject it and the "
+                f"expiry: the cookie is past its expiry ({basis}) — CR will reject it and the "
                 "server will serve anonymously. Re-run `auth` to renew.",
+                file=stdout,
+            )
+        elif measured:
+            print(
+                f"expiry: {st['expires_at']} — {int(left)} days left (CR's own expiry, read from "
+                "the browser at capture)",
                 file=stdout,
             )
         else:
             print(
-                f"expiry: at most {int(left)} days left (365-day cookie, from capture)",
+                f"expiry: at most {int(left)} days left (assumed: a pasted cookie carries no "
+                f"expiry, so this is {DURABLE_COOKIE_DAYS} days from capture — an upper bound, "
+                "not a measurement)",
                 file=stdout,
             )
         if 0 < left <= 30:
             print(
                 "warning: renew soon — re-run `auth`. Using the cookie does not extend it; "
-                "only a fresh sign-in with remember-me mints a new 365-day one.",
+                "only a fresh sign-in with remember-me mints a new one.",
                 file=stderr,
             )
     print(f"hash present: {'yes' if st['hash_present'] else 'no'}", file=stdout)
@@ -197,7 +234,7 @@ def _read_paste(path: str | None, stdin: TextIO, stderr: TextIO) -> str:
     return "".join(lines)
 
 
-def _browser_capture(timeout_s: int) -> str:
+def _browser_capture(timeout_s: int) -> Capture:
     from .browser_auth import capture_hash
 
     def announce(label: str) -> None:

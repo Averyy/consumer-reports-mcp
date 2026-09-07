@@ -127,16 +127,19 @@ it.
 
 ### Expiry and renewal
 
-`hash` carries a fixed 365-day expiry from the sign-in, and using it doesn't extend that. Inside
-the last 30 days every response carries `session_expiring:<days>` in `warnings[]`, and
-`cr_auth_status` shows the same countdown as an upper bound.
+A "remember me" `hash` carries a fixed 365-day expiry from the sign-in, and using it doesn't
+extend that. The browser sign-in records the cookie's real expiry (and refuses a session-only
+one — that is remember-me not having taken); a pasted cookie carries none, so its countdown is
+assumed from the capture date. Inside the last 30 days every response carries
+`session_expiring:<days>` in `warnings[]`, and `cr_auth_status` shows the same countdown with
+`expiry_basis` saying whether it is measured or assumed.
 
 Once it passes, CR rejects the cookie and the server continues anonymously: `session: expired`,
 `auth_state: session_expired`, `null` scores, and a notice naming the fix. Scores already cached
 keep being served, because a scored row is never replaced by an unscored one.
 
 `cr_sign_in` verifies a stored session before opening anything, so a user who's still signed in
-gets a refusal. A cookie CR has rejected, or one past its 365-day bound, is renewed with no flag.
+gets a refusal. A cookie CR has rejected, or one past its expiry, is renewed with no flag.
 `force: true` replaces a session that's verified live, for renewing early.
 
 ### What it won't do

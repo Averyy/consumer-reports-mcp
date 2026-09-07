@@ -6,6 +6,7 @@ import ast
 import asyncio
 import base64
 import builtins
+import logging
 import os
 import re
 import signal
@@ -90,9 +91,16 @@ class FakePlaywright:
         return False
 
 
-def _hash_cookie(value: str, domain: str = ".consumerreports.org") -> dict:
-    """What Playwright returns for CR's `hash`: the name, the value and the cookie's domain."""
-    return {"name": "hash", "value": value, "domain": domain}
+# a durable `hash`, as the "remember me" mint issues it: 365 days out, in POSIX seconds
+DURABLE_EXPIRES = time.time() + 365 * 86400
+
+
+def _hash_cookie(
+    value: str, domain: str = ".consumerreports.org", expires: float = DURABLE_EXPIRES
+) -> dict:
+    """What Playwright returns for CR's `hash`: the name, the value, the cookie's domain and
+    its expiry — POSIX seconds, or `-1` for a session cookie."""
+    return {"name": "hash", "value": value, "domain": domain, "expires": expires}
 
 
 def test_missing_extra_gives_install_hint_not_traceback(monkeypatch):
@@ -127,11 +135,92 @@ def test_never_references_password_field():
 async def test_polls_until_hash_then_returns():
     browser = FakeBrowser([[], [{"name": "userToken", "value": "x"}], [_hash_cookie("a" * 36)]])
     pw = FakePlaywright(browser)
-    token = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
-    assert token == "a" * 36
+    captured = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    assert captured.value == "a" * 36
+    assert captured.expires_at == B.expiry_from_posix(DURABLE_EXPIRES)
     assert browser.context.closed and browser.closed
     assert browser.context.page.gotos == [B.LOGIN_URL]
-    assert browser.context.page.checks == [B.REMEMBER_ME_SELECTOR]
+    # ticked at launch and re-asserted on every poll (three polls here), never anything else
+    assert set(browser.context.page.checks) == {B.REMEMBER_ME_SELECTOR}
+    assert len(browser.context.page.checks) == 4
+
+
+def test_capture_repr_never_carries_the_value():
+    """A logged or formatted `Capture` is the one new place a token could leak."""
+    cap = B.Capture(value="q" * 36, expires_at="2027-09-05T00:00:00Z")
+    assert "q" * 36 not in repr(cap) and "q" * 36 not in str(cap)
+    assert "2027-09-05T00:00:00Z" in repr(cap)
+
+
+async def test_a_session_only_hash_is_never_the_capture(monkeypatch, caplog):
+    """Playwright reports `expires: -1` for a session cookie. That is "remember me" NOT having
+    taken — CR then issues a session that dies in days (RECON §5) — and stored under the
+    assumed 365-day bound it read as a year of life until the day it stopped working (a
+    2026-09-05 capture died within a day, status said 364). So it ends in `NotDurable`, after
+    a grace for the durable one to land, with nothing captured."""
+    monkeypatch.setattr(B, "DURABLE_GRACE_S", 0.05)
+    browser = FakeBrowser([[_hash_cookie("s" * 36, expires=-1)]])
+    pw = FakePlaywright(browser)
+    with caplog.at_level(logging.WARNING, logger="consumer_reports_mcp.browser_auth"):
+        with pytest.raises(B.NotDurable) as ei:
+            await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    assert "nothing was captured" in str(ei.value) and "Remember Me" in str(ei.value)
+    assert "s" * 36 not in str(ei.value) and "s" * 36 not in caplog.text
+    assert "session-only" in caplog.text
+    assert not isinstance(ei.value, B.CaptureTimeout)  # a token DID appear
+    assert browser.context.closed and browser.closed
+    # a missing or unreadable `expires` is a session cookie too: an expiry that cannot be read
+    # cannot be stored as measured
+    for bad in (
+        {"name": "hash", "value": "t" * 36, "domain": ".consumerreports.org"},
+        _hash_cookie("t" * 36, expires="soon"),
+        _hash_cookie("t" * 36, expires=0),
+    ):
+        assert B._expires(bad) is None
+    assert B._expires(_hash_cookie("t" * 36, expires=1.5)) == 1.5
+
+
+async def test_a_durable_hash_arriving_within_the_grace_wins(monkeypatch):
+    """The login's redirect hops can set cookies across polls: a session-only `hash` on one
+    poll and the durable one on the next is a capture, not a failure."""
+    monkeypatch.setattr(B, "DURABLE_GRACE_S", 5.0)
+    browser = FakeBrowser(
+        [
+            [_hash_cookie("u" * 36, expires=-1)],
+            [_hash_cookie("u" * 36, expires=-1)],
+            [
+                _hash_cookie("u" * 36, expires=-1),
+                _hash_cookie("v" * 36, domain="www.consumerreports.org"),
+            ],
+        ]
+    )
+    pw = FakePlaywright(browser)
+    t0 = time.monotonic()
+    captured = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    assert captured.value == "v" * 36 and time.monotonic() - t0 < 1.0
+    assert captured.expires_at == B.expiry_from_posix(DURABLE_EXPIRES)
+
+
+async def test_remember_me_is_reasserted_every_poll_and_a_missing_box_never_stalls_it():
+    """The tick is a guard applied every poll, not once at launch: it covers a user who
+    un-ticks the box (measured 2026-09-07: CR itself renders it checked on every render, so a
+    re-render does not lose it). A page with no form — mid-navigation, or signed in — answers
+    within the recheck budget and the poll goes on."""
+
+    class FlakyPage(FakePage):
+        async def check(self, selector, timeout=0):
+            self.checks.append((selector, timeout))
+            if len(self.checks) > 1:  # every re-assertion: the box is gone
+                raise RuntimeError("Timeout 250ms exceeded")
+
+    browser = FakeBrowser([[], [], [_hash_cookie("w" * 36)]])
+    browser.context.page = FlakyPage()
+    pw = FakePlaywright(browser)
+    captured = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    assert captured.value == "w" * 36
+    checks = browser.context.page.checks
+    assert checks[0] == (B.REMEMBER_ME_SELECTOR, 5000)
+    assert checks[1:] == [(B.REMEMBER_ME_SELECTOR, B.REMEMBER_ME_RECHECK_TIMEOUT_MS)] * 3
 
 
 async def test_times_out_cleanly():
@@ -204,15 +293,15 @@ async def test_remember_me_selector_failure_only_warns(caplog):
     browser = FakeBrowser([[_hash_cookie("d" * 36)]])
     browser.context.page = NoCheckPage()
     pw = FakePlaywright(browser)
-    token = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
-    assert token == "d" * 36 and "remember-me" in caplog.text
+    captured = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    assert captured.value == "d" * 36 and "remember-me" in caplog.text
 
 
 async def test_polls_on_the_real_interval_and_window_close_is_clean():
     browser = FakeBrowser([[], [], [_hash_cookie("e" * 36)]])
     pw = FakePlaywright(browser)
-    token = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0.01)
-    assert token == "e" * 36
+    captured = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0.01)
+    assert captured.value == "e" * 36
 
     class ClosedContext(FakeContext):
         async def cookies(self):
@@ -259,10 +348,10 @@ async def test_falls_back_to_edge_when_chrome_is_absent(monkeypatch):
     pw = FakePlaywright(browser)
     pw.chromium = SelectiveChromium(browser, ok_channels=("msedge",))
     launched: list[str] = []
-    token = await B.capture_hash(
+    captured = await B.capture_hash(
         timeout_s=5, playwright_factory=lambda: pw, poll_s=0, on_launch=launched.append
     )
-    assert token == "f" * 36 and launched == ["msedge"]
+    assert captured.value == "f" * 36 and launched == ["msedge"]
     assert [a.get("channel") for a in pw.chromium.attempts] == ["chrome", "msedge"]
     assert all(a["headless"] is False for a in pw.chromium.attempts)
     # still a throwaway context on the fallback rung
@@ -355,8 +444,8 @@ async def test_playwright_import_runs_off_the_loop_thread(monkeypatch):
 
     monkeypatch.setattr(B, "_import_playwright", slow_import)
     async with LoopHeartbeat() as hb:
-        token = await B.capture_hash(timeout_s=5, poll_s=0)
-    assert token == "i" * 36
+        captured = await B.capture_hash(timeout_s=5, poll_s=0)
+    assert captured.value == "i" * 36
     assert seen and seen[0] is not threading.main_thread()
     assert hb.max_gap < 0.15  # the loop ticked through the import
 
@@ -489,7 +578,7 @@ async def test_stopping_the_driver_is_bounded_too(monkeypatch):
     token = await asyncio.wait_for(
         B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0), 3
     )
-    assert token == "j" * 36 and time.monotonic() - t0 < 1.0
+    assert token.value == "j" * 36 and time.monotonic() - t0 < 1.0
     assert browser.context.closed and browser.closed
 
 
@@ -727,15 +816,16 @@ async def test_a_hash_cookie_off_domain_or_malformed_is_not_the_token():
     flow then failed permanently while blaming remember-me."""
     browser = FakeBrowser(
         [
-            [{"name": "hash", "value": "x" * 36, "domain": "tracker.example"}],
-            [{"name": "hash", "value": "y" * 36, "domain": "consumerreports.org.evil.example"}],
-            [{"name": "hash", "value": "short", "domain": ".consumerreports.org"}],
-            [{"name": "hash", "value": "m" * 36, "domain": "www.consumerreports.org"}],
+            [_hash_cookie("x" * 36, domain="tracker.example")],
+            [_hash_cookie("y" * 36, domain="consumerreports.org.evil.example")],
+            [_hash_cookie("short")],
+            [_hash_cookie("m" * 36, domain="www.consumerreports.org")],
         ]
     )
     pw = FakePlaywright(browser)
-    token = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
-    assert token == "m" * 36
+    captured = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    assert captured.value == "m" * 36
     # and a bare `.consumerreports.org` domain cookie is the normal case
     pw2 = FakePlaywright(FakeBrowser([[_hash_cookie("n" * 36)]]))
-    assert await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw2, poll_s=0) == "n" * 36
+    again = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw2, poll_s=0)
+    assert again.value == "n" * 36

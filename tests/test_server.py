@@ -145,9 +145,11 @@ async def test_sign_in_and_status_round_trip_through_the_server(tmp_path):
     gate = __import__("asyncio").Event()
 
     async def capture(*, timeout_s, on_launch):
+        from consumer_reports_mcp.browser_auth import Capture
+
         on_launch("chrome")
         await gate.wait()
-        return "q" * 36
+        return Capture(value="q" * 36, expires_at="2027-09-07T00:00:00Z")
 
     async def validate(settings, cookies):
         return "member"
@@ -170,6 +172,8 @@ async def test_sign_in_and_status_round_trip_through_the_server(tmp_path):
     assert sorted(sc) == ["data", "error", "session", "warnings"]
     assert sc["data"]["sign_in"] == "active" and sc["session"] == "active"
     assert sc["data"]["source"] == "file" and sc["warnings"] == []
+    assert sc["data"]["expires_at"] == "2027-09-07T00:00:00Z"
+    assert sc["data"]["expiry_basis"] == "measured"
     assert "q" * 36 not in json.dumps(sc)
 
 

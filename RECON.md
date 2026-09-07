@@ -255,6 +255,24 @@ A login without it yields a session that expires in days. This is shipped, not h
 `browser_auth.REMEMBER_ME_SELECTOR` re-ticks it in the `cr_sign_in` / `auth --browser` window
 (`SPEC.md` §6 step 3). CR renders the box already checked, so the tick is a guard, not a fix.
 
+**The box is checked on every server render, and no script touches it** (measured 2026-09-07,
+read-only, no login attempted). Both `GET /ec/login` and `GET /ec/login?error` — the page a
+failed submit lands on — ship `<input name="setAutoLogin" … checked="checked" type="checkbox">`;
+the form is `<form id="login-form" method="POST" action="/ec/login">`, a full-page POST, not an
+SPA; and `content-login.*.js` contains no reference to `setAutoLogin`, the checkbox id or
+`.checked` — its only lifecycle hook is `onpageshow` → `location.reload()` on a bfcache restore,
+which re-renders server-side, checked. So a failed submit does NOT lose the tick. The flow
+re-asserts it on every poll anyway, which covers the user un-ticking it and CR changing the
+default.
+
+**A capture of 2026-09-05 stopped working within about a day, and why is unknowable.** The
+browser flow at the time returned only the cookie's value; the `expires` Playwright reports
+(POSIX seconds, `-1` for a session cookie) was discarded, `session.json` stored only
+`captured_at`, and the status counted down from the 365-day constant — it said 364 the day the
+cookie died. A session-only `hash` (remember-me not taking) fits the symptom exactly and is the
+leading hypothesis, but the one fact that would confirm it was never recorded. The flow now
+returns and stores the expiry, and refuses a `hash` with none (`SPEC.md` §6).
+
 ### Verified end to end
 
 A plain server-side GET carrying the cookie returns every overall score and every attribute
@@ -1398,6 +1416,9 @@ Everything the spikes closed has moved to §10. What remains:
   `/ec/login`, no payload, no marker. §5 measured *absent* cookies: the ordinary anonymous page.
   A real credential that has lapsed on CR's side was never observed and could plausibly take
   either path, so both are handled.
+- **Why the 2026-09-05 capture died within a day** (§5). The expiry was not recorded at the
+  time; the next capture will carry one, and a session-only `hash` is now refused, so a repeat
+  will either be explained by `expires_at` or be a different failure.
 - **What a wafer identity rotation does to a live member session.** §10c established that the
   jar loss seen in testing was CR clearing a rejected cookie, *not* rotation — so the rotation
   hazard itself is still un-observed. It stays mitigated by construction (`max_rotations=0`

@@ -877,14 +877,18 @@ The command then:
    any fetch where `get_cookie("userLicenses")` differs from the stored value — not on every
    request, and never for the env-var path, which is read-only by nature.
 
-`session.json` is deliberately minimal, and carries a capture date so age can be reported without
-an expiry to count down from:
+`session.json` is deliberately minimal: the cookies, when they were captured, and — when the
+browser sign-in read it off the jar — the durable cookie's own expiry:
 
 ```jsonc
-{ "schema_version": 1,
+{ "schema_version": 2,
   "cookies": { "hash": "…", "userLicenses": "…" },
-  "captured_at": "2026-09-02T11:04:00Z" }
+  "captured_at": "2026-09-02T11:04:00Z",
+  "expires_at": "2027-09-02T11:03:58Z" }   // null for a paste: it carries no attributes
 ```
+
+Schema 1 had no `expires_at`; a schema-1 file loads unchanged as "expiry not measured", so
+nothing stored before needs rewriting, and `load()` never writes.
 
 Two more subcommands, both one-liners that the design needs and an earlier draft omitted:
 
@@ -895,16 +899,34 @@ Two more subcommands, both one-liners that the design needs and an earlier draft
   credential short of `rm`, which is a poor answer in a tool whose security story is "we only
   ever hold a cookie you handed us".
 
-**The countdown is an upper bound, and says so.** An earlier draft promised
-`session_expires_in_days` as a fact, and that is unimplementable from this input: a `Cookie:`
-request header carries only `name=value` pairs — the real expiry lives in `Set-Cookie` responses
-and the browser's jar, neither of which is in a paste. What *is* knowable is `captured_at`, and
-`hash` runs 365 days from the mint without sliding, so `--status` reports
-`remaining_days_max = 365 - age` and names it a maximum: capture can post-date CR's mint by any
-amount, so the real deadline is that day **or earlier**, never later. Inside 30 days it warns, and
-says renewing means a fresh sign-in rather than another request, because using the cookie buys no
-time. Reporting a bound the user can act on beats reporting nothing about a credential that
-otherwise dies silently a year in.
+**The countdown is measured when it can be, assumed when it cannot, and says which.** An
+earlier draft promised `session_expires_in_days` as a fact, and for a PASTE that is
+unimplementable: a `Cookie:` request header carries only `name=value` pairs — the real expiry
+lives in `Set-Cookie` responses and the browser's jar, neither of which is in a paste. What is
+knowable there is `captured_at`, and `hash` from a "remember me" login runs 365 days from the
+mint without sliding, so for a paste `--status` reports `remaining_days_max = 365 - age`, labels
+it `expiry_basis: "assumed"` and names it a maximum: capture can post-date CR's mint by any
+amount, so the real deadline is that day **or earlier**, never later.
+
+The browser sign-in is different: `context.cookies()` hands over the cookie's `expires`, and an
+earlier version of this project read it and threw it away — it returned only the value, stored
+only `captured_at`, and counted down from the constant. **A cookie captured 2026-09-05 stopped
+working within about a day while the status said `remaining_days_max: 364`**, and the system
+could not say whether that cookie had ever been durable, because the one fact that would have
+answered — the expiry the browser had literally handed it — was never recorded. So now the
+capture is the value AND the expiry (`browser_auth.Capture`), the expiry is stored as
+`expires_at`, and `remaining_days_max` counts from it with `expiry_basis: "measured"`. It is
+still a maximum — CR can revoke a cookie before its expiry — but it is CR's own date, not ours.
+And a `hash` the browser reports with NO expiry (`expires: -1`, a session cookie) is not a
+capture at all: that is "remember me" not having taken, CR issues a session that dies in days
+(`RECON.md` §5), and stored under the assumed bound it reads as a year of life right up to the
+day it dies — the exact failure above. It ends in `NotDurable` / `reason: "not_durable"`,
+nothing stored, after a short grace for the durable cookie to land on a later redirect hop.
+
+Inside 30 days the status warns, and says renewing means a fresh sign-in rather than another
+request, because using the cookie buys no time. Reporting a bound the user can act on beats
+reporting nothing about a credential that otherwise dies silently a year in — and reporting
+which kind of bound it is beats reporting a number that could be off by a year.
 
 What replaces it is honest and sufficient:
 
@@ -982,10 +1004,18 @@ pointing at the console one-liner — never a traceback. (From PyPI the equivale
    Playwright doing the reading. The user logs in inside a clean window; the context is discarded
    when the command exits. It follows that being already logged in elsewhere does not help, and
    that is the correct trade.
-3. **Navigate to the login page and pre-check `setAutoLogin`.** That box mints the durable 365-day
-   `hash` (`RECON.md` §5); without it the captured session dies in days and looks exactly like the
-   tool breaking a week later. Ticking a checkbox on the user's behalf is not touching their
-   credential, and the alternative — an instruction they can miss — fails silently and much later.
+3. **Navigate to the login page and keep `setAutoLogin` checked — on every poll, not once.**
+   That box mints the durable 365-day `hash` (`RECON.md` §5); without it the captured session
+   dies in days and looks exactly like the tool breaking a week later. Ticking a checkbox on the
+   user's behalf is not touching their credential, and the alternative — an instruction they can
+   miss — fails silently and much later. The tick is re-asserted each poll (`page.check` on an
+   already-checked box returns without clicking, scrolling or focusing, so it is invisible while
+   the user types; a 250 ms budget keeps a page with no form from stalling the poll). Measured
+   2026-09-07 on the real page: CR renders the box `checked="checked"` server-side on both the
+   plain page and the `?error` page a failed submit lands on, the form is a plain
+   `POST /ec/login`, and the login script never touches it — so a re-render does not lose the
+   tick, and the per-poll guard covers what a one-time tick did not: the user un-ticking it, or
+   CR changing its default.
 4. **Then wait, and do nothing else.** Poll `context.cookies()` for a `hash` cookie, up to a
    generous timeout (default 5 minutes, `--timeout`). **The server never reads, fills, or inspects
    the username or password fields**, and it never submits the form. If the user closes the window
@@ -994,10 +1024,16 @@ pointing at the console one-liner — never a traceback. (From PyPI the equivale
    domain must be `consumerreports.org` or a subdomain of it, and the value must be the
    36-character token shape the paste path accepts. Anything else keeps the poll going — a stray
    `hash` from another site used to be returned as the capture, and the flow then failed
-   permanently while blaming remember-me.
+   permanently while blaming remember-me. **And it must be durable**: the capture is the value
+   together with the cookie's `expires` (`Capture(value, expires_at)`), and a `hash` reported
+   with none (`-1`, a session cookie) is "remember me" not having taken — after a short grace
+   for the durable one to land on a later hop, the poll ends in `NotDurable` and nothing is
+   captured. See *The countdown is measured when it can be* above for why silently accepting it
+   is the worst outcome this flow has.
 5. **Harvest `hash` only, then validate and store exactly as the paste path does** — same
-   `c35183` validation fetch, same `0600` write, same warning if `hash` is somehow absent. From
-   step 5 on there is one code path, not two.
+   `c35183` validation fetch, same `0600` write, same warning if `hash` is somehow absent, plus
+   the measured `expires_at`, which is the one thing this path stores that the paste cannot.
+   From step 5 on there is one code path, not two.
 6. **Close the browser and discard the context** whether it succeeded or failed — on every exit
    path (success, timeout, the user closing the window, `cancel()`, task cancellation,
    interpreter shutdown), and **bounded**. `context.close()`/`browser.close()` wait for a reply
@@ -1102,7 +1138,10 @@ So the design is **non-blocking start, status poll, live adoption**:
   rather than by a later poll; a slow launch is reported as `waiting` with `browser: null` and
   the poll fills it in.
 - **`cr_auth_status(wait_s=0)`** returns `{session, warnings, error, data}` with
-  `data: {source, captured_at, days_left_max, sign_in, reason, browser}`. With `wait_s > 0` it
+  `data: {source, captured_at, expires_at, expiry_basis, days_left_max, sign_in, reason,
+  browser}` — `expiry_basis` is `measured` (the browser read CR's own expiry, in
+  `expires_at`) or `assumed` (a paste: 365 days from capture) — and `days_left_max` counts
+  from whichever applies. With `wait_s > 0` it
   long-polls for a phase change, capped at **45 s** — under the 60 s limit with margin for the
   round trip — and returns immediately when nothing is in flight. `sign_in` is
   `idle | verifying | waiting | validating | active | refused | failed`.
@@ -1111,9 +1150,10 @@ So the design is **non-blocking start, status poll, live adoption**:
 - **The guard verifies; it does not refuse blind.** `force` means one thing: *replace a cookie
   verified live*. Without it, what happens depends on what is actually known:
   - **`none` or `expired`** (nothing stored, or CR rejected it): proceed — the renewal case.
-  - **Past the cookie's own bound** (`days_left_max <= 0`, the 365-day upper bound §6
-    *renewal*): proceed, whatever `session` says — the project's own arithmetic says it cannot
-    be live, so there is nothing to verify and nothing worth refusing for.
+  - **Past the cookie's own bound** (`days_left_max <= 0` — CR's measured expiry when the
+    browser recorded one, else the assumed 365-day upper bound, §6 *renewal*): proceed, whatever
+    `session` says — the bound says it cannot be live, so there is nothing to verify and nothing
+    worth refusing for.
   - **`active`** (a marker-bearing fetch in THIS process saw it live): refuse, `reason:
     "session_active"`. The message may say the cookie works, because that is known.
   - **`unverified`** (stored, no marker-bearing fetch yet): **resolve it** — the task starts in
@@ -1142,6 +1182,8 @@ So the design is **non-blocking start, status poll, live adoption**:
   `browser_extra_missing` (names the install command and the paste path; checked BEFORE any
   probe is spent), `offline`.
 - **Failures the poll reports:** `browser_not_found`, `window_closed`, `capture_timeout`,
+  `not_durable` (CR issued a session-only `hash` — no expiry, remember-me did not take —
+  nothing captured, the text says to leave "Remember Me" ticked),
   `session_expired` / `credential_rejected` (the cookie did not authenticate — nothing stored),
   `could_not_check:<reason>` (a transport failure is not a verdict — nothing stored, as in the
   CLI; from the pre-flight check it also means no window was opened), `save_failed:<type>`,
@@ -1198,15 +1240,21 @@ cannot override `CR_SESSION_COOKIE`. The residual risk is a client's "Always all
 the prompt is gone and only the description stands between an agent and an unasked-for window.
 That is why the description says what it says.
 
-**Renewal is the part that matters in month eleven.** `hash` is fixed at 365 days from the mint
-and using it never extends it, so every session dies, on schedule, a year in. Two signals:
+**Renewal is the part that matters in month eleven.** A "remember me" `hash` is fixed at 365
+days from the mint and using it never extends it, so every session dies, on schedule, a year in.
+Two signals:
 
 - **`warnings: ["session_expiring:<days>"]`** on every tool that carries `session`, once
-  `remaining_days_max` (365 − capture age, an upper bound) is inside 30 days. `<days>` is that
-  bound, truncated and clamped at 0. Not emitted once the session is already `expired` — the
-  envelope says `session_expired` then, and "expiring" on top of it is noise. The env-var path
-  has no capture date, so no bound and no warning. `--status` and `cr_auth_status` report the
-  same number, as `days_left_max`.
+  `remaining_days_max` is inside 30 days. That number counts from CR's own expiry when the
+  browser sign-in recorded one (`expiry_basis: "measured"`), and from 365 − capture age only
+  when nothing was measured (`"assumed"`: a paste, or a session stored before expiries were
+  recorded) — an upper bound that can overstate the life left by up to a year, which is how a
+  2026-09-05 capture died within a day while this warning stayed silent at 364. `<days>` is
+  that number, truncated and clamped at 0. Not emitted once the session is already `expired` —
+  the envelope says `session_expired` then, and "expiring" on top of it is noise. The env-var
+  path has no capture date, so no bound and no warning. `--status` and `cr_auth_status` report
+  the same number, as `days_left_max`, together with `expires_at` and `expiry_basis` so a user
+  can tell a measurement from an assumption.
 - **The `session_expired` notice names the fix**: `cr_sign_in` first, then
   `consumer-reports-mcp auth`, then "update `CR_SESSION_COOKIE` if it came from there".
 
@@ -2188,7 +2236,7 @@ state either: an unfiltered listing is refused before the request (§5).
 | `typeahead_unavailable` | CR's typeahead failed or was challenged; only the local index was searched for categories | `cr_search` |
 | `ratings_unavailable:<modelYearId>:<reason>` | one row's per-car ratings fetch failed under `detail="standard"`; the row is listed without its road-test keys | `cr_cars` |
 | `index_refresh_failed:<reason>` | the cars index refetch failed and the cached index answered | `cr_car_search` |
-| `session_expiring:<days>` | the stored cookie's upper-bound life is inside 30 days (§6 *renewal*) | every tool that carries `session` |
+| `session_expiring:<days>` | the stored cookie's remaining life — CR's own expiry when measured, the assumed 365-day bound otherwise — is inside 30 days (§6 *renewal*) | every tool that carries `session` |
 
 ### Envelope fields by tool
 
@@ -2246,7 +2294,7 @@ knowing on any call.
 | `auth_state` / `scores_available` / `sort` / `provenance` | — | — |
 | `session` | ✓ | ✓ |
 | `warnings` / `error` | ✓ (`error` always null) | ✓ (`error` always null) |
-| `data` | `{status, reason, instructions, browser, expires_in_s}` | `{source, captured_at, days_left_max, sign_in, reason, browser}` |
+| `data` | `{status, reason, instructions, browser, expires_in_s}` | `{source, captured_at, expires_at, expiry_basis, days_left_max, sign_in, reason, browser}` |
 
 **The two auth tools wear the same outer envelope as every other tool, around a status object.**
 There is no row to describe, so `provenance` and `scores_available` are omitted like the other
@@ -2259,8 +2307,8 @@ Both are typed models with enums like everything else, and no field at any depth
 hold a cookie value.
 
 **`warnings` carries `session_expiring:<days>` on every tool that carries `session`** —
-products, cars, `cr_auth_status`, `cr_sign_in` — once the stored cookie's upper-bound life is
-inside 30 days (§6 *renewal*). `cr_reliability` drops `session` and so drops this too.
+products, cars, `cr_auth_status`, `cr_sign_in` — once the stored cookie's remaining life (measured
+or assumed, §6 *renewal*) is inside 30 days. `cr_reliability` drops `session` and so drops this too.
 
 ### Tool descriptions are part of the contract
 
@@ -3624,9 +3672,12 @@ HttpOnly, expiry) and the re-mint transcript. Those moved to **`notes/auth-recon
    remaining unknowns are about **our client's**, and are the three spikes in §10.
 6. ~~Is hCaptcha enforced on every login POST?~~ **Permanently moot** — no login is ever
    automated. Recorded in §6 for the record only.
-7. ~~How long does a session last?~~ **Answered.** `hash` is the durable credential (365 days)
-   and alone restores full member access over plain HTTP, re-minting the short-lived
-   `userLicenses`; `userToken`'s 1-day expiry is irrelevant (§6, `RECON.md` §5).
+7. ~~How long does a session last?~~ **Answered, with a caveat.** `hash` from a "remember me"
+   login is the durable credential (365 days) and alone restores full member access over plain
+   HTTP, re-minting the short-lived `userLicenses`; `userToken`'s 1-day expiry is irrelevant
+   (§6, `RECON.md` §5). The caveat: a capture of 2026-09-05 died within a day, and the version
+   that captured it had discarded the cookie's expiry, so whether it was ever a 365-day cookie
+   is unknowable. The browser sign-in now records the expiry and refuses a session-only one.
 8. ~~Can the Overall Score be derived from anonymous fields?~~ **No — tested and rejected**
    (§5). Max error 13.1 points on a 36-point range.
 9. **Does a captured session actually survive its expected ~year in practice?** Empirical, not
