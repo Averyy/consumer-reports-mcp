@@ -7,8 +7,10 @@ scripts responses and exceptions and records every request, so no test touches t
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -315,6 +317,17 @@ def html_response(url: str, body: bytes, **kw: Any) -> FakeResponse:
 def json_response(url: str, obj: Any, **kw: Any) -> FakeResponse:
     kw.setdefault("headers", {"content-type": "application/json"})
     return FakeResponse(url=url, content=json.dumps(obj).encode(), **kw)
+
+
+async def until(pred: Callable[[], bool], *, timeout_s: float = 5.0) -> None:
+    """Yield to the loop until `pred()` holds — the wait before an assertion about what is on
+    the wire. A fixed `asyncio.sleep(0.02)` there lost the race on a Windows CI runner whose
+    SQLite writes alone took longer; a condition cannot lose it."""
+    deadline = time.monotonic() + timeout_s
+    while not pred():
+        if time.monotonic() > deadline:
+            raise AssertionError("the awaited condition never held")
+        await asyncio.sleep(0.001)
 
 
 # --------------------------------------------------------------------------- pytest fixtures

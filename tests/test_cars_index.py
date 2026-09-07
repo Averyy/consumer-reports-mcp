@@ -5,7 +5,14 @@ from __future__ import annotations
 from consumer_reports_mcp.cars.index import parse_car_types, parse_keys, resolve_car_type
 from consumer_reports_mcp.cars.tools import cr_car_search, cr_cars
 from consumer_reports_mcp.config import CARS_API, CARS_PAGE_URL
-from tests.conftest import FakeResponse, RuntimeHarness, json_response, load_fixture, make_car_page
+from tests.conftest import (
+    FakeResponse,
+    RuntimeHarness,
+    json_response,
+    load_fixture,
+    make_car_page,
+    until,
+)
 
 
 def test_keys_flatten_counts_and_primary_type():
@@ -131,9 +138,9 @@ async def test_concurrent_cold_searches_fetch_the_car_page_and_index_once(tmp_pa
     h.sess.route(CARS_PAGE_URL, slow_page)
     h.sess.route(f"{CARS_API}/v1/cr/keys", slow_keys)
     tasks = [asyncio.ensure_future(cr_car_search(h.rt, "make b")) for _ in range(3)]
-    await asyncio.sleep(0.01)
+    await until(lambda: CARS_PAGE_URL in h.requests)  # the leader is at the page gate
     page_gate.set()
-    await asyncio.sleep(0.01)
+    await until(lambda: f"{CARS_API}/v1/cr/keys" in h.requests)  # …and at the keys gate
     keys_gate.set()
     results = await asyncio.gather(*tasks)
     assert all(r.error is None and len(r.data.cars) == 6 for r in results)

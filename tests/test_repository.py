@@ -24,6 +24,7 @@ from tests.conftest import (
     make_login_page,
     make_maintenance_page,
     make_reliability_page,
+    until,
 )
 
 T0 = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
@@ -223,7 +224,7 @@ async def test_a_sign_in_adopted_mid_category_fetch_is_retried_once_not_surfaced
 
     h.sess.route(CAT_URL, slow)
     inflight = asyncio.ensure_future(h.repo.get_category(37162))
-    await asyncio.sleep(0.01)
+    await until(lambda: h.requests)
     assert h.requests == [CAT_URL]  # on the wire, anonymously
     h.store.save({"hash": HASH})
     await h.transport.adopt()
@@ -278,7 +279,7 @@ async def test_a_sign_in_adopted_mid_reliability_fetch_is_retried_once(
 
     h.sess.route(REL_URL, slow)
     inflight = asyncio.ensure_future(h.repo.get_reliability(37162))
-    await asyncio.sleep(0.01)
+    await until(lambda: attempts)
     assert attempts == [REL_URL]
     h.store.save({"hash": HASH})
     await h.transport.adopt()

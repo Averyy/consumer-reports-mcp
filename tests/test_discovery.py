@@ -18,7 +18,7 @@ from consumer_reports_mcp.discovery import (
     slug_of,
 )
 from consumer_reports_mcp.transport import FetchFailed, Transport
-from tests.conftest import FakeResponse, FakeWaferSession, fixture_envelope, fixture_text
+from tests.conftest import FakeResponse, FakeWaferSession, fixture_envelope, fixture_text, until
 
 T0 = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 
@@ -255,7 +255,7 @@ async def test_an_adopt_during_the_products_xml_fetch_does_not_kill_discovery(tm
 
     sess.route(PRODUCTS_SITEMAP_URL, slow_index)
     task = disc.start_background_sitemap_pass()
-    await asyncio.sleep(0.01)
+    await until(lambda: attempts)
     assert attempts == [PRODUCTS_SITEMAP_URL]  # on the wire
     await disc.transport.adopt()  # the sign-in landed
     gate.set()

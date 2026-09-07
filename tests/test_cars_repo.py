@@ -19,7 +19,14 @@ from consumer_reports_mcp.cars.repository import (
 from consumer_reports_mcp.cars.tools import cr_car, cr_cars
 from consumer_reports_mcp.config import CARS_API, CARS_LIMIT_SUMMARY_MAX, CARS_PAGE_URL
 from consumer_reports_mcp.transport import FetchFailed
-from tests.conftest import FakeResponse, RuntimeHarness, json_response, load_fixture, make_car_page
+from tests.conftest import (
+    FakeResponse,
+    RuntimeHarness,
+    json_response,
+    load_fixture,
+    make_car_page,
+    until,
+)
 
 
 def _listing(n: int) -> dict:
@@ -418,10 +425,11 @@ async def test_a_cancelled_cr_car_does_not_kill_a_concurrent_standard_listing(tm
 
     h.sess.route(lambda u: "/v2/cr/modelYears/" in u, slow)
     car = asyncio.ensure_future(cr_car(h.rt, 700001))
-    await asyncio.sleep(0.02)  # the car page, then modelYears/700001 on the wire
+    await until(lambda: h.api_requests("modelYears/700001"))  # the car page, then the model-year
     assert h.api_requests("modelYears/700001") == [f"{CARS_API}/v2/cr/modelYears/700001"]
     listing = asyncio.ensure_future(cr_cars(h.rt, make="Make A", detail="standard", limit=2))
-    await asyncio.sleep(0.02)  # the listing request, then row 0 joins the 700001 flight
+    flights = h.rt.transport.single_flight._inflight
+    await until(lambda: flights[("car", 700001)].callers == 2)  # row 0 joined the flight
     car.cancel()
     with pytest.raises(asyncio.CancelledError):
         await car

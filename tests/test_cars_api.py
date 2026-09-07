@@ -10,7 +10,7 @@ import pytest
 from consumer_reports_mcp.config import CARS_API, CARS_PAGE_URL
 from consumer_reports_mcp.credentials import SessionHealth
 from consumer_reports_mcp.transport import Challenged, FetchFailed
-from tests.conftest import SYNTH_API_KEY, FakeResponse, RuntimeHarness, make_car_page
+from tests.conftest import SYNTH_API_KEY, FakeResponse, RuntimeHarness, make_car_page, until
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -109,7 +109,7 @@ async def test_a_sign_in_adopted_mid_car_page_fetch_is_retried_once(tmp_path):
 
     h.sess.route(CARS_PAGE_URL, slow)
     inflight = asyncio.ensure_future(h.rt.cars.page_info())
-    await asyncio.sleep(0.01)
+    await until(lambda: h.requests)
     assert h.requests == [CARS_PAGE_URL]
     h.rt.credentials.save({"hash": "h" * 36})
     await h.rt.transport.adopt()
