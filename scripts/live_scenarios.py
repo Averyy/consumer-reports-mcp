@@ -1,18 +1,25 @@
 """Drive every tool against Consumer Reports the way a member does — see VALIDATION.md.
 
-    uv run --no-sync scripts/live_scenarios.py [--anonymous]
+    uv run --no-sync scripts/live_scenarios.py [--refresh] [--anonymous]
 
-Uses the same settings, cache and `session.json` as the server. Prints one line per check and
-exits 1 on any failure. Opens no browser: the sign-in check only confirms `cr_sign_in` is
-refused for a live cookie. Roughly 30 requests, spaced by the configured politeness interval.
+Uses the same settings, `session.json` and cache as the server. A warm cache answers most checks
+without a request — that proves the envelopes, not CR's pages — so `--refresh` sends the FIRST
+call on every category, car and survey to CR and requires it to come back `from_cache: false`.
+`--anonymous` runs with no cookie against a cache of its own under `<cache_dir>/anonymous/`: a
+member row answers ANY caller (SPEC §8), so the server's cache would hand this run the member's
+scores. Prints one line per check and exits 1 on any failure. Opens no browser: the sign-in
+check only confirms `cr_sign_in` is refused for a live cookie. Roughly 30 requests on a refresh,
+spaced by the configured politeness interval.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from consumer_reports_mcp.auth_tools import cr_auth_status, cr_sign_in
@@ -35,6 +42,37 @@ FRONT_LOAD_WASHERS = "c28739"  # args.cats[] mixes ids and slugs
 TVS = "c28700"  # 303 products
 MATTRESSES = "c28705"  # 14 MB page
 DISPLAY_GROUP = "c200369"  # a display-group id, answered with its owner
+TOP_LOAD_WASHERS = {"c32002", "c37107"}  # index rows whose names say "Washers", not "washing"
+
+# what the anonymous cache is seeded WITH: the discovery index (the sitemap walk behind it is
+# ~200 requests) — and never a fetched row, of any tier
+PAYLOAD_TABLES = ("category_raw", "product_index", "reliability_raw", "car_raw")
+
+
+def anonymous_settings(base: Settings) -> tuple[Settings, Path | None]:
+    """A cache of the anonymous run's own, and where it was seeded from (None: not this time).
+
+    SPEC §8 rule 1 — a member row answers any caller — is right for the server (a member who
+    logs out keeps the scores they fetched) and makes a shared cache useless here: every products
+    check would be answered with the member's row, labelled `member`. First use copies the
+    server cache's index tables and drops every row; later runs find their own anonymous rows
+    there, as the member run finds member rows in the server cache."""
+    settings = Settings(home=base.home, env={"CR_CACHE_DIR": str(base.cache_dir / "anonymous")})
+    if settings.db_path.exists() or not base.db_path.exists():
+        return settings, None
+    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(base.db_path)
+    dst = sqlite3.connect(settings.db_path)
+    try:
+        src.backup(dst)
+        with dst:
+            for table in PAYLOAD_TABLES:
+                dst.execute(f"DELETE FROM {table}")
+        dst.execute("VACUUM")
+    finally:
+        src.close()
+        dst.close()
+    return settings, base.db_path
 
 
 class Failure(AssertionError):
@@ -64,10 +102,21 @@ def products_of(data: dict | None) -> list[dict]:
 
 
 class Run:
-    def __init__(self, rt: Any, member: bool) -> None:
+    def __init__(self, rt: Any, member: bool, *, refresh: bool = False) -> None:
         self.rt = rt
         self.member = member
+        self.refresh = refresh
+        self._touched: set[str] = set()
         self.results: list[tuple[str, bool, str]] = []
+
+    def fresh(self, key: str) -> bool:
+        """Whether THIS call carries `refresh=True`: on a `--refresh` run, the first call per
+        category, car or survey. A second inside the 300 s cooldown is answered
+        `refresh_skipped`, which `honest` treats as the failure it would be."""
+        if not self.refresh or key in self._touched:
+            return False
+        self._touched.add(key)
+        return True
 
     async def check(self, name: str, fn: Callable[[], Awaitable[str | None]]) -> None:
         t0 = time.monotonic()
@@ -82,11 +131,15 @@ class Run:
         print(f"{'PASS' if ok else 'FAIL'}  {name:<48} {time.monotonic() - t0:5.1f}s  {note}")
 
     # --- the paywall-honesty rules every products envelope must satisfy -------------------
-    def honest(self, env: Any, *, rows_expected: bool = True) -> dict:
+    def honest(self, env: Any, *, rows_expected: bool = True, live: bool = False) -> dict:
         e = d(env)
         expect(e["error"] is None, f"error: {e['error']}")
         for w in e["warnings"]:
             expect(not w.startswith("session_expiring"), f"unexpected {w}")
+            expect(not w.startswith("refresh_"), f"the refresh did not reach CR: {w}")
+        if live:  # a `--refresh` first call: CR's page, not a row, must have answered
+            prov = e.get("provenance") or {}
+            expect(prov.get("from_cache") is False, f"served from the cache on a refresh: {prov}")
         if not rows_expected:
             return e
         tier = "member" if self.member else "anonymous"
@@ -114,15 +167,22 @@ class Run:
 
 async def main(argv: list[str]) -> int:
     anonymous = "--anonymous" in argv
+    refresh = "--refresh" in argv
     configure_logging()
     settings = Settings()
     store = default_store(settings.config_dir, env={})
+    seeded_from: Path | None = None
     if anonymous:
         store = CredentialStore(settings.config_dir / "no-such-session.json", env={})
+        settings, seeded_from = anonymous_settings(settings)
     rt = build_runtime(settings, env={}, credentials=store)
     member = not anonymous and store.has_durable
-    print(f"mode: {'member' if member else 'anonymous'}  cache: {settings.cache_dir}")
-    run = Run(rt, member)
+    seeded = f"  (seeded from {seeded_from})" if seeded_from else ""
+    print(
+        f"mode: {'member' if member else 'anonymous'}  refresh: {'yes' if refresh else 'no'}  "
+        f"cache: {settings.cache_dir}{seeded}"
+    )
+    run = Run(rt, member, refresh=refresh)
     try:
         await rt.discovery.ensure_az_index()
         await scenarios(run)
@@ -149,8 +209,9 @@ async def scenarios(run: Run) -> None:
     await run.check("search: french door refrigerator", s1_search)
 
     async def s1_ratings() -> str:
-        env = await cr_ratings(rt, FRENCH_DOOR, price_max=2500, recommended=True)
-        e = run.honest(env)
+        live = run.fresh(FRENCH_DOOR)
+        env = await cr_ratings(rt, FRENCH_DOOR, price_max=2500, recommended=True, refresh=live)
+        e = run.honest(env, live=live)
         products = products_of(e["data"])
         expect(products, "no products")
         for p in products:
@@ -163,7 +224,9 @@ async def scenarios(run: Run) -> None:
     await run.check("ratings: c37162 price_max recommended", s1_ratings)
 
     async def s1_product() -> str:
-        env = await cr_product(rt, state["fridge"], include_descriptions=True)
+        fridge = state.get("fridge")
+        expect(fridge, "no product id: the ratings step did not serve one")
+        env = await cr_product(rt, fridge, include_descriptions=True)
         e = run.honest(env)
         p = e["data"]["product"]
         expect("dont_buy" in p, "dont_buy missing")
@@ -188,18 +251,22 @@ async def scenarios(run: Run) -> None:
 
     # 2. Dishwashers — sitemap-only id, plus brand reliability
     async def s2_ratings() -> str:
-        env = await cr_ratings(rt, DISHWASHERS)
-        e = run.honest(env)
+        live = run.fresh(DISHWASHERS)
+        env = await cr_ratings(rt, DISHWASHERS, refresh=live)
+        e = run.honest(env, live=live)
         return f"{len(products_of(e['data']))} rows served for a sitemap-only id"
 
     await run.check("ratings: c28687 (sitemap-only id)", s2_ratings)
 
     async def s2_reliability() -> str:
-        env = await cr_reliability(rt, DISHWASHERS)
+        live = run.fresh(f"reliability:{DISHWASHERS}")
+        env = await cr_reliability(rt, DISHWASHERS, refresh=live)
         e = d(env)
         expect(e["error"] is None, e["error"])
         expect(e["auth_state"] == "anonymous", "reliability is one tier")
         expect("session" not in e, "reliability must omit session")
+        if live:
+            expect(e["provenance"]["from_cache"] is False, "survey served from the cache")
         expect(e["data"]["brands"], "no brands")
         return f"{len(e['data']['brands'])} brands surveyed"
 
@@ -210,13 +277,16 @@ async def scenarios(run: Run) -> None:
         out = d(await cr_search(rt, "washing machines"))
         ids = [h["id"] for h in out["data"]["categories"]]
         expect(FRONT_LOAD_WASHERS in ids, f"front-load washers not among {ids[:5]}")
-        return f"resolved via CR's label; hits {ids[:4]}"
+        # the index rows named "…Washers" are reached by the root rule, not by CR's label
+        expect(TOP_LOAD_WASHERS <= set(ids), f"top-load washers missing from {ids}")
+        return f"resolved via CR's label; hits {ids[:4]} (+{len(ids) - 4} more)"
 
     await run.check("search: washing machines (CR label)", s3_search)
 
     async def s3_ratings() -> str:
-        env = await cr_ratings(rt, FRONT_LOAD_WASHERS, attributes=["Noise"], limit=5)
-        e = run.honest(env)
+        live = run.fresh(FRONT_LOAD_WASHERS)
+        env = await cr_ratings(rt, FRONT_LOAD_WASHERS, attributes=["Noise"], limit=5, refresh=live)
+        e = run.honest(env, live=live)
         products = products_of(e["data"])
         expect(products, "no products")
         for p in products:
@@ -228,7 +298,10 @@ async def scenarios(run: Run) -> None:
 
     # 4. Every TV — paging past the 200 cap
     async def s4_paging() -> str:
-        a = run.honest(await cr_ratings(rt, TVS, group_mode="flat", limit=200))
+        live = run.fresh(TVS)
+        a = run.honest(
+            await cr_ratings(rt, TVS, group_mode="flat", limit=200, refresh=live), live=live
+        )
         b = run.honest(await cr_ratings(rt, TVS, group_mode="flat", limit=200, offset=200))
         ids_a = [p["id"] for p in products_of(a["data"])]
         ids_b = [p["id"] for p in products_of(b["data"])]
@@ -242,7 +315,8 @@ async def scenarios(run: Run) -> None:
 
     # 5. Mattresses — the 14 MB page
     async def s5() -> str:
-        e = run.honest(await cr_ratings(rt, MATTRESSES, limit=3))
+        live = run.fresh(MATTRESSES)
+        e = run.honest(await cr_ratings(rt, MATTRESSES, limit=3, refresh=live), live=live)
         return f"served; groups {len(e['data'].get('groups') or [])}"
 
     await run.check("ratings: c28705 (14 MB page)", s5)
@@ -261,8 +335,15 @@ async def scenarios(run: Run) -> None:
     await run.check("car_search: Toyota RAV4", s6_search)
 
     async def s6_car() -> str:
-        out = d(await cr_car(rt, state["rav4"]))
+        rav4 = state.get("rav4")
+        expect(rav4, "no model-year id: the search step did not serve one")
+        live = run.fresh(f"car:{rav4}")
+        out = d(await cr_car(rt, rav4, refresh=live))
         expect(out["error"] is None, out["error"])
+        for w in out["warnings"]:
+            expect(not w.startswith("refresh_"), f"the refresh did not reach CR: {w}")
+        if live:
+            expect(out["provenance"]["from_cache"] is False, "car served from the cache")
         sa = out["scores_available"]
         expect(sa and all(v in ("available", "absent") for v in sa.values()), f"scores {sa}")
         expect(out["session"] in ("active", "unverified", "none"), out["session"])
@@ -271,7 +352,11 @@ async def scenarios(run: Run) -> None:
     await run.check("car: RAV4 model-year", s6_car)
 
     async def s6_cars_standard() -> str:
-        out = d(await cr_cars(rt, make="toyota", year=2025, detail="standard", limit=3))
+        out = d(
+            await cr_cars(
+                rt, make="toyota", year=2025, detail="standard", limit=3, refresh=run.refresh
+            )
+        )
         expect(out["error"] is None, out["error"])
         rows = out["data"]["cars"]
         expect(rows and len(rows) <= 3, f"{len(rows)} rows")

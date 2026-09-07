@@ -815,7 +815,9 @@ async def test_search_ties_keep_cr_order_and_label_synonyms_count(tmp_path):
     # CR's label "washing machines" is Front-load washers' own synonym: exact through it
     assert hits[0] == ("c28739", "exact")
     assert hits[1] == ("c36939", "partial")  # rowing machines: the head noun, lexically
-    assert hits[2:] == [("c37106", "none"), ("c33902", "none")]  # CR's reasons, not the tokens
+    # compact and pressure washers: `washing` reaches `washers` through the root, the head noun
+    # `machine` does not — modifier-only hits, tied, so CR's order stands between them
+    assert hits[2:] == [("c37106", "partial"), ("c33902", "partial")]
 
     _typeahead_fixture(h, "refrigerators")
     out = await cr_search(h.rt, "refrigerators")

@@ -1754,7 +1754,11 @@ answered *Pressure Washers* first, with *multi-cookers* (what CR calls a pressur
 An assistant taking `categories[0]` would describe a pressure washer. The rule lives in
 `lexical.py` and is plain token logic, no distance metric: hyphens split like spaces, function
 words (`the`, `and`, `of`…) drop out, and a query token matches a hay token when the two agree
-after a plural strip (`microwaves` ≈ `microwave`, `mattresses` ≈ `mattress`) or the hay token
+after a plural strip (`microwaves` ≈ `microwave`, `mattresses` ≈ `mattress`), when both are
+derived forms sharing a root once the gerund and agent-noun suffixes come off (`washing` ≈
+`washers`, `cooking` ≈ `cookers`, never the bare word — `blends` is not `blender`; measured
+2026-09-07, `washing machines` reached Front-load washers through CR's label and missed both
+top-load categories, whose names say *Washers*), or the hay token
 extends it by at most two characters (`tv` → `tvs`, `robot` → `robotic`) — never by substring,
 which would let `the` in `over-the-range` reach *thermostats*. A hit's texts are its display
 name, its slug and, for a typeahead hit, CR's own label (`"washing machines"` on Front-load

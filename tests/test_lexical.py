@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from consumer_reports_mcp import lexical
-from consumer_reports_mcp.lexical import Match, match, stem, token_matches, tokens
+from consumer_reports_mcp.lexical import Match, match, root, stem, token_matches, tokens
 
 
 def test_tokens_split_hyphens_and_drop_function_words():
@@ -28,11 +28,29 @@ def test_stem_is_a_plural_strip_only():
     assert stem("gas") == "gas" and stem("tvs") == "tvs" and stem("glass") == "glass"
 
 
-def test_token_matches_by_stem_or_short_extension_never_substring():
+def test_root_strips_the_gerund_and_agent_suffixes_after_the_plural():
+    assert root("washing") == "wash" and root("washers") == "wash" and root("washer") == "wash"
+    assert root("cooking") == "cook" and root("cookers") == "cook"
+    assert root("heating") == "heat" and root("heaters") == "heat"
+    assert root("filtering") == "filt" and root("filters") == "filt"  # both suffixes, in order
+    assert root("dishwashers") == "dishwash" != root("washing")  # a compound keeps its head
+    # a bare word has no root: it must not join the derived forms (`blends` ≠ `blender`)
+    assert root("wash") is None and root("blends") is None and root("heat") is None
+    # four characters must remain: a word that merely ends in `er` (or `ing`) is not derived
+    assert root("water") is None and root("paper") is None
+    assert root("watering") == "water"  # `water` is left whole, so the two never agree
+    assert root("ring") is None and root("string") is None and root("over") is None
+    assert root("dryer") is None and root("drying") is None  # the price of that rule
+
+
+def test_token_matches_by_stem_root_or_short_extension_never_substring():
     assert token_matches("microwaves", "microwave") and token_matches("microwave", "microwaves")
     assert token_matches("tv", "tvs") and token_matches("robot", "robotic")
+    assert token_matches("washing", "washers") and token_matches("washer", "washing")
+    assert token_matches("cooking", "cookers") and token_matches("heaters", "heating")
     assert not token_matches("the", "thermostats")  # eight characters longer: not a prefix hit
-    assert not token_matches("washing", "washers") and not token_matches("range", "orange")
+    assert not token_matches("range", "orange") and not token_matches("washing", "dishwashers")
+    assert not token_matches("blender", "blends") and not token_matches("water", "watering")
     assert not token_matches("dish", "dishwasher")  # substring search is what this replaces
     assert not token_matches("a", "air")
 
@@ -55,9 +73,13 @@ def test_match_kinds_and_key():
     assert match(tokens("tv"), ["TVs", "tvs"]).kind == "full"  # an extension, not a stem
     # exact against ANY text, including CR's label — its own synonym for the category
     assert match(tokens("washing machine"), ["Front-load washers", None, "washing machines"]).exact
-    none = match(tokens("washing machine"), ["Compact Washers", "compact-washers"])
+    # `washing` reaches `washers` through the root; `machine` is nowhere — a modifier-only hit
+    compact = match(tokens("washing machine"), ["Compact Washers", "compact-washers"])
+    assert compact.kind == "partial" and compact.qualifies  # 1 of 2 is half
+    assert compact == Match(total=2, matched=1, head=False, extra=1, exact=False)
+    none = match(tokens("washing machine"), ["Dishwashers", "dishwasher"])
     assert none.kind == "none"
-    assert none == Match(total=2, matched=0, head=False, extra=2, exact=False)
+    assert none == Match(total=2, matched=0, head=False, extra=1, exact=False)
     assert match([], ["Laptops"]).kind == "none" and match(q, [None, ""]).kind == "none"
 
 

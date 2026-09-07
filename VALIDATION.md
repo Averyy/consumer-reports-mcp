@@ -6,14 +6,31 @@ stored by `consumer-reports-mcp auth`. Run it after a release, after a sign-in, 
 is suspected of having changed something the fixtures cannot show.
 
 ```bash
-uv run --no-sync scripts/live_scenarios.py            # ~2-4 min, ~30 requests, 2 s apart
-uv run --no-sync scripts/live_scenarios.py --anonymous   # the same run with no cookie
+uv run --no-sync scripts/live_scenarios.py --refresh     # ~3-4 min, ~30 requests, 2 s apart
+uv run --no-sync scripts/live_scenarios.py               # the same checks against the cache
+uv run --no-sync scripts/live_scenarios.py --anonymous --refresh   # no cookie, own cache
 ```
 
 The runner prints one line per check and exits non-zero on any failure. It reads the same
 `session.json` and cache as the server, so a member run also warms the cache the server serves
 from. It opens no browser: the sign-in check calls `cr_sign_in` only to confirm it is REFUSED
 for a live session (a dead cookie would make it open a window — run `auth --browser` first).
+
+**A warm cache answers without a request.** Every products check is served from the newest
+scored row, so a run with no flag can pass in seconds having proved the envelopes and nothing
+about CR's pages (measured 2026-09-07: 22 passed, every products check in 0.0 s, two days after
+the rows were fetched). `--refresh` sends the first call on every category, car and survey to
+CR and fails the check unless it comes back `from_cache: false`; the calls that follow on the
+same row (the product drill-down, the filters, the second page) stay inside the 300 s refresh
+cooldown and are served from the row just written, which is what they should prove.
+
+**The anonymous run keeps a cache of its own**, `<cache_dir>/anonymous/`. SPEC §8 rule 1 — a
+member row answers ANY caller, so a member who logs out keeps the scores they fetched — means a
+cookie-less process reading the server's cache is handed the member's rows, labelled
+`auth_state: member`. That is the server being honest about what it served, not the anonymous
+tier. The first anonymous run seeds its cache with the server cache's discovery index (the
+sitemap walk behind it is ~200 requests) and none of its rows; from then on it is warm or
+refreshed exactly as the member run is.
 
 ## What "working" means
 
@@ -27,6 +44,8 @@ Every products envelope is held to the paywall-honesty rules, not just to "no ex
 | `data.notice` | absent | present, names the paywall, never `cr_sign_in` unasked |
 | `session` | `active` after the first marker-bearing fetch | `none` |
 | `warnings[]` | no `session_expiring` inside 30 days of a fresh capture | no session warnings at all |
+| `provenance.from_cache` on a `--refresh` first call | `false` | `false` |
+| `refresh_skipped` / `refresh_failed:*` | never | never |
 
 Cars are one tier: `scores_available` values are `available`/`absent`, never `unavailable`,
 and the envelope carries no `auth_state` at all, in both runs.
@@ -46,9 +65,11 @@ Each is a question a member would ask, and the tool chain an assistant would run
    never `unknown_category`; `cr_reliability("c28687")` returns brand surveys with
    `auth_state: "anonymous"` (one tier) and no `session` key.
 3. **"A quiet front-load washer"** — `cr_search("washing machines")` resolves by CR's own
-   label to Front-Load Washers `c28739`, the category whose `args.cats[]` mixes ids and slugs;
-   `cr_ratings("c28739", attributes=["Noise"])` projects the attribute on every row without a
-   crash, null where a product lacks it.
+   label to Front-Load Washers `c28739`, the category whose `args.cats[]` mixes ids and slugs,
+   and reaches both top-load categories (`c32002`, `c37107`) through the root rule, since
+   their names say *Washers* and no label says *washing*; `cr_ratings("c28739",
+   attributes=["Noise"])` projects the attribute on every row without a crash, null where a
+   product lacks it.
 4. **"Show me every TV"** — Televisions `c28700` has 303 products: `cr_ratings("c28700",
    group_mode="flat", limit=200)` then `offset=200` reach every product exactly once; `total`
    agrees across pages.
@@ -89,7 +110,7 @@ the first two `warnings`, and whether the expectation held. Do not call cr_sign_
 5. cr_filters("c37162")                       → a numeric filter collapsed to {min, max}
 6. cr_ratings("c28687")                       → rows served (this id is not in CR's A-Z index)
 7. cr_reliability("c28687")                   → brands listed, auth_state "anonymous", no session key
-8. cr_search("washing machines")              → "c28739" among the category hits
+8. cr_search("washing machines")              → "c28739" first; "c32002" and "c37107" (top-load) among the hits
 9. cr_ratings("c28739", attributes=["Noise"], limit=5)
                                               → projected_attributes on every row, no error
 10. cr_ratings("c28700", group_mode="flat", limit=200) then offset=200
@@ -107,14 +128,22 @@ Finish with a table of step, tool, pass/fail, and the one field that decided it.
 ```
 
 Anonymous variant: the same block on a server started with no `session.json` (or
-`CR_SESSION_COOKIE` unset). Expect `auth_state: anonymous`, `overall_score` null on every
-product, `scores_available.overall_score: unavailable`, and a `data.notice` that names the
-paywall without telling the agent to call `cr_sign_in`.
+`CR_SESSION_COOKIE` unset) AND `CR_CACHE_DIR` pointing at the runner's anonymous cache,
+`~/.cache/consumer-reports-mcp/anonymous` — with the server's own cache it would serve the
+member rows it holds, labelled `member`, and prove nothing (SPEC §8 rule 1). Expect
+`auth_state: anonymous`, `overall_score` null on every product,
+`scores_available.overall_score: unavailable`, and a `data.notice` that names the paywall
+without telling the agent to call `cr_sign_in`.
 
 ## When a check fails
 
 - `auth_state: anonymous` on a member run with `session: expired` → the cookie lapsed
   (RECON §5). Run `consumer-reports-mcp auth --browser`, then re-run.
+- `auth_state: member` on an anonymous run → the run is reading a cache that holds member
+  rows: `CR_CACHE_DIR` points at the server's cache, or its own was seeded by hand. Delete
+  `<cache_dir>/anonymous/` and re-run; it is re-seeded from the index alone.
+- `refresh_skipped` on a `--refresh` run → a previous refresh of that row is younger than 300 s.
+  Wait it out; it is the cooldown that bounds a prompt-injected refresh loop, not a fault.
 - `payload_missing` or `attribute_dictionary_missing` on a category that served yesterday →
   CR changed the page. Run the canary: `CR_LIVE=1 .venv/bin/pytest tests/live/test_live_canary.py`
   names which anchor broke.

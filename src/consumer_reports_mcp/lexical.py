@@ -9,9 +9,12 @@ among equally-scoring hits.
 
 Plain token logic, deliberately: no edit distance and no dependency. Hyphens split like
 spaces, matching is case-insensitive, and a query token matches a hay token when the two agree
-after a plural strip (`microwaves` ≈ `microwave`, `mattresses` ≈ `mattress`) or when the hay
-token merely extends it by up to two characters (`tv` → `tvs`, `robot` → `robotic`) — never
-by substring, which would let `"the"` in `over-the-range` reach *thermostats*.
+after a plural strip (`microwaves` ≈ `microwave`, `mattresses` ≈ `mattress`), when both are
+derived forms sharing a root once the gerund and agent-noun suffixes come off (`washing` ≈
+`washers`, `cooking` ≈ `cookers` — measured 2026-09-07: `washing machines` reached only the one
+category CR labels with that phrase and missed both top-load washer categories), or when the
+hay token merely extends it by up to two characters (`tv` → `tvs`, `robot` → `robotic`) —
+never by substring, which would let `"the"` in `over-the-range` reach *thermostats*.
 """
 
 from __future__ import annotations
@@ -55,8 +58,30 @@ def stem(token: str) -> str:
     return token
 
 
+def root(token: str) -> str | None:
+    """The stem with the gerund or agent-noun suffix taken off — `washing` → `wash`, `washers`
+    → `wash`, `filtering` → `filt` (both, in order) — or None when there was none to take.
+    Two DERIVED forms of a word agree (`washing` ≈ `washers`, `cooking` ≈ `cookers`, `heating`
+    ≈ `heaters`); the bare word never joins them: swept over the index vocabulary 2026-09-07, a
+    bare root equated `blends` with `blender` and `heat` with `heaters`, and nothing else the
+    derived pairs did not already cover. At least four characters must remain, which is what
+    keeps a word that merely ENDS in `er` — `water`, `paper`, `cover` — from posing as one
+    (`watering` ≈ `water` was the sweep's other false pair); `dryer`/`drying` and `ring` are
+    left alone with them. Like `stem`, consistent rather than English."""
+    t = stem(token)
+    stripped = False
+    for suffix in ("ing", "er"):
+        if t.endswith(suffix) and len(t) - len(suffix) >= 4:
+            t = t[: -len(suffix)]
+            stripped = True
+    return t if stripped else None
+
+
 def token_matches(query_token: str, hay_token: str) -> bool:
     if stem(query_token) == stem(hay_token):
+        return True
+    r = root(query_token)
+    if r is not None and r == root(hay_token):
         return True
     return (
         len(query_token) >= 2
