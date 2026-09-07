@@ -504,25 +504,6 @@ per category, no api-key, no pagination.
   the `?error` page a failed submit lands on, the form is a plain `POST /ec/login`, and
   `content-login.*.js` never touches the box — so "the tick is lost on a re-render" is NOT
   confirmed; the per-poll re-tick covers a user un-ticking it or CR changing its default.
-  **Reconstructed 2026-09-07 (`RECON.md` §5): that capture authenticated for 24 h 02 min and
-  then answered `session_expired` — a 24-hour server-side session, the same span as
-  `userToken`.** So durability is a THRESHOLD, not "has a date": a `hash` whose expiry is
-  under `MIN_DURABLE_S` (2 days) is refused exactly like a session cookie, and the
-  `NotDurable` message names the measured life. **Every `hash` the window holds is logged
-  ONCE with its attributes (domain, path, flags, expiry) and never its value** — that log line
-  is the fact the 2026-09-05 capture never recorded. Among several durable ones the capture
-  is the apex-domain (`.consumerreports.org`, what the jar seeds) one with the farthest
-  expiry, never the first listed. **The CLI configures logging BEFORE the browser step**
-  (`auth_command`, not `_validate`): configured only for the validation that follows, those
-  INFO lines were dropped on the one run they were written for (2026-09-07). That run minted
-  a 365-day `hash` through the automation window, so the window is not the cause of the
-  09-05 death by itself; that cause stays unknown.
-- **A LAPSED `hash` is ignored, not rejected** (measured 2026-09-07 on that dead cookie): a
-  plain `200`, NO redirect (no re-mint hop), the anonymous body, `hash` left in the jar. That
-  is `session_expired` (marker `false`, `hash` asserted in the jar) — the `/ec/login?error`
-  redirect of `RECON.md` §10b is the MALFORMED case only. The transport never writes `hash`
-  back (`record_rotation` is `userLicenses` only — measured: `hash` does not rotate), so a
-  stored `hash` is always the one the browser handed over.
 - **The measured expiry is STORED (`expires_at`, session schema 2) and the renewal signal
   counts from it.** `CredentialStore.save(cookies, expires_at=)`; `status()` reports
   `expires_at`, `expiry_basis` (`measured` / `assumed`) and `remaining_days_max` — days to
