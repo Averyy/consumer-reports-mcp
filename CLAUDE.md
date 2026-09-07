@@ -26,8 +26,12 @@ Run lint, format check and the full suite before every commit. Python runs via `
 ## Repository etiquette
 
 - Never commit without being asked. No Claude attribution in commits.
-- Bump the patch version in `pyproject.toml` on every change set and run `uv lock`; ask before
-  a minor or major bump.
+- Bump the patch version in `pyproject.toml` on every change that touches `src/` and run
+  `uv lock`; ask before a minor or major bump.
+- IMPORTANT: after every push, watch CI to completion (`gh run watch <id> --exit-status`) and
+  fix a failure before reporting done. After a tag, watch the Release run the same way, then
+  confirm the version on PyPI (`curl -s https://pypi.org/pypi/consumer-reports-mcp/<v>/json`).
+  A push is not finished until both are green.
 - IMPORTANT: never tag, release, `uv publish`, or change repo visibility from an agent. Those
   are the owner's actions.
 - Never commit member-only scores or a full CR payload. Fixtures are anonymous, content-minimal
