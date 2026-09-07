@@ -41,6 +41,10 @@ HASH = "s" * 36
 STORED = "h" * 36  # what `RuntimeHarness(cookie=True)` stores
 PROBE_URL = WWW + AUTH_PROBE_PATH
 LIVE_PHASES = ("verifying", "waiting", "validating")
+# what cr_sign_in answers once the task has started: a fake capture and validation that never
+# suspend on real I/O can finish inside the launch wait, and the answer is then the phase the
+# task is in — `validating` or `active` — never a `waiting` describing a closed window
+STARTED = ("waiting", "validating", "active")
 
 
 def iso_days_from_now(days: float) -> str:
@@ -212,7 +216,7 @@ async def test_sign_in_makes_the_next_products_call_member_tier_without_a_restar
 
     flow_for(h, capture=make_capture(), validate=validate)
     out = await cr_sign_in(h.rt)
-    assert out.data.status == "waiting"
+    assert out.data.status in STARTED
     st = await settle(h)
     assert st.data.sign_in == "active", st.data.reason
     assert h.requests[n] == PROBE_URL  # the probe fetch, on a throwaway session
@@ -237,7 +241,7 @@ async def test_sign_in_is_idempotent_while_one_is_in_flight(tmp_path):
     first = await cr_sign_in(h.rt)
     second = await cr_sign_in(h.rt)
     forced = await cr_sign_in(h.rt, force=True)
-    assert first.data.status == "waiting"
+    assert first.data.status in STARTED
     assert second.data.status == "in_progress" and forced.data.status == "in_progress"
     assert "do not start another" in second.data.instructions and second.data.browser == "chrome"
     assert len(capture.calls) == 1  # one window, not three
@@ -247,7 +251,7 @@ async def test_sign_in_is_idempotent_while_one_is_in_flight(tmp_path):
     assert again.data.status == "refused" and again.data.reason == "session_active"
     assert "force=true" in again.data.instructions
     forced = await cr_sign_in(h.rt, force=True)
-    assert forced.data.status == "waiting" and len(capture.calls) == 2
+    assert forced.data.status in STARTED and len(capture.calls) == 2
 
 
 async def test_a_dead_stored_cookie_is_renewed_without_force(tmp_path):
@@ -264,7 +268,7 @@ async def test_a_dead_stored_cookie_is_renewed_without_force(tmp_path):
     flow_for(h, capture=capture, validate=validate)
 
     out = await cr_sign_in(h.rt)  # no force
-    assert out.data.status == "waiting" and out.data.browser == "chrome", out.data
+    assert out.data.status in STARTED and out.data.browser == "chrome", out.data
     assert validate.seen == [{"hash": STORED, "userLicenses": "old"}]  # the STORED cookie
     assert len(capture.calls) == 1  # …was rejected, so the window opened
     assert out.session == "expired" and h.rt.health.health is SessionHealth.EXPIRED
@@ -299,7 +303,7 @@ async def test_a_stored_cookie_cr_still_accepts_is_refused_after_the_check_not_b
     assert again.data.status == "refused" and len(validate.seen) == 1
     # `force` means exactly "replace a cookie verified live"
     forced = await cr_sign_in(h.rt, force=True)
-    assert forced.data.status == "waiting" and len(capture.calls) == 1
+    assert forced.data.status in STARTED and len(capture.calls) == 1
     assert (await settle(h)).data.sign_in == "active" and stored_hash(h) == HASH
 
 
@@ -340,7 +344,7 @@ async def test_a_cookie_past_its_own_bound_proceeds_without_force_or_a_check(tmp
     validate = make_validate("member")
     flow_for(h, capture=capture, validate=validate)
     out = await cr_sign_in(h.rt)
-    assert out.data.status == "waiting" and len(capture.calls) == 1
+    assert out.data.status in STARTED and len(capture.calls) == 1
     assert (await settle(h)).data.sign_in == "active"
     assert validate.seen == [{"hash": HASH}]  # only the NEW cookie was checked
     assert stored_hash(h) == HASH and (await cr_auth_status(h.rt)).data.days_left_max == 365
@@ -370,7 +374,7 @@ async def test_a_check_that_cannot_reach_cr_is_no_verdict_and_opens_no_window(tm
     # `force` skips the check: the window opens, and the captured cookie is what gets checked
     validate = make_validate("member")
     flow_for(h, capture=capture, validate=validate)
-    assert (await cr_sign_in(h.rt, force=True)).data.status == "waiting"
+    assert (await cr_sign_in(h.rt, force=True)).data.status in STARTED
     assert (await settle(h)).data.sign_in == "active" and validate.seen == [{"hash": HASH}]
 
 
@@ -393,7 +397,7 @@ async def test_the_real_check_runs_the_shared_probe_against_the_stored_cookie(tm
     capture = make_capture(gate=gate)
     flow_for(h, capture=capture, validate=validate)
     out = await cr_sign_in(h.rt)
-    assert out.data.status == "waiting", out.data
+    assert out.data.status in STARTED, out.data
     assert h.requests == [PROBE_URL] and h.rt.health.health is SessionHealth.EXPIRED
     assert h.sess.get_cookie("hash", WWW + "/") == STORED  # the stored cookie was what went out
     probe_member_page(h, c37162, subscriber="true")
@@ -417,7 +421,7 @@ async def test_the_loop_stays_responsive_while_a_capture_is_pending(tmp_path):
     async with LoopHeartbeat() as hb:
         t0 = time.monotonic()
         out = await asyncio.wait_for(cr_sign_in(h.rt), 30)
-        assert out.data.status == "waiting" and time.monotonic() - t0 < 1.0
+        assert out.data.status in STARTED and time.monotonic() - t0 < 1.0
         t1 = time.monotonic()
         st = await asyncio.wait_for(cr_auth_status(h.rt), 5)
         cats = await asyncio.wait_for(cr_categories(h.rt), 5)
@@ -450,7 +454,7 @@ async def test_cancel_returns_promptly_even_when_the_window_teardown_lingers(tmp
 
     validate = make_validate()
     flow = flow_for(h, capture=capture, validate=validate)
-    assert (await cr_sign_in(h.rt, force=True)).data.status == "waiting"
+    assert (await cr_sign_in(h.rt, force=True)).data.status in STARTED
     t0 = time.monotonic()
     await flow.cancel()
     assert time.monotonic() - t0 < 1.0
@@ -480,7 +484,7 @@ async def test_cancel_propagates_only_the_callers_own_cancellation(tmp_path):
             raise
 
     flow = flow_for(h, capture=capture, validate=make_validate())
-    assert (await cr_sign_in(h.rt)).data.status == "waiting"
+    assert (await cr_sign_in(h.rt)).data.status in STARTED
     canceller = asyncio.create_task(flow.cancel())
     await asyncio.sleep(0)  # cancel() has cancelled the sign-in and is waiting on it
     canceller.cancel()
@@ -509,7 +513,7 @@ async def test_a_swallowed_cancellation_cannot_store_a_cookie_behind_a_cancelled
         return "member"
 
     flow = flow_for(h, capture=make_capture(), validate=swallowing_validate)
-    assert (await cr_sign_in(h.rt)).data.status == "waiting"
+    assert (await cr_sign_in(h.rt)).data.status in STARTED
     assert (await cr_auth_status(h.rt)).data.sign_in == "validating"
     await flow.cancel()
     assert not flow.in_progress
@@ -570,7 +574,7 @@ async def test_sign_in_refuses_under_env_override_and_names_where_to_fix_it(tmp_
     rt2.sign_in = SignInFlow(
         rt2, capture=make_capture(), validate=make_validate(), launch_wait_s=0.1
     )
-    assert (await cr_sign_in(rt2)).data.status == "waiting"
+    assert (await cr_sign_in(rt2)).data.status in STARTED
     # nor is the template a host might pass through unexpanded for that empty field
     tmpl = CredentialStore(
         tmp_path / "s3.json", env={"CR_SESSION_COOKIE": "${user_config.session_cookie}"}
@@ -579,7 +583,7 @@ async def test_sign_in_refuses_under_env_override_and_names_where_to_fix_it(tmp_
     rt3.sign_in = SignInFlow(
         rt3, capture=make_capture(), validate=make_validate(), launch_wait_s=0.1
     )
-    assert (await cr_sign_in(rt3)).data.status == "waiting"
+    assert (await cr_sign_in(rt3)).data.status in STARTED
 
 
 async def test_sign_in_refuses_without_the_browser_extra_naming_the_install(tmp_path, monkeypatch):
@@ -634,7 +638,7 @@ async def test_capture_failures_are_reported_and_change_nothing(tmp_path, exc, r
     assert h.rt.transport.adoptions == 0 and h.rt.health.health is SessionHealth.NONE
     # and the flow is reusable: the next call starts fresh
     flow_for(h, capture=make_capture(), validate=make_validate())
-    assert (await cr_sign_in(h.rt)).data.status == "waiting"
+    assert (await cr_sign_in(h.rt)).data.status in STARTED
 
 
 @pytest.mark.parametrize(
@@ -685,7 +689,7 @@ async def test_cancel_on_shutdown_stores_nothing(tmp_path):
     h = RuntimeHarness(tmp_path)
     gate = asyncio.Event()
     flow = flow_for(h, capture=make_capture(gate=gate), validate=make_validate())
-    assert (await cr_sign_in(h.rt)).data.status == "waiting"
+    assert (await cr_sign_in(h.rt)).data.status in STARTED
     await flow.cancel()
     st = await cr_auth_status(h.rt)
     assert st.data.sign_in == "failed" and st.data.reason == "cancelled"
@@ -775,7 +779,7 @@ async def test_a_measured_expiry_drives_the_countdown_not_the_capture_date(tmp_p
     assert st.warnings == ["session_expiring:0"]
     capture2 = make_capture()
     flow_for(h2, capture=capture2, validate=make_validate())
-    assert (await cr_sign_in(h2.rt)).data.status == "waiting" and len(capture2.calls) == 1
+    assert (await cr_sign_in(h2.rt)).data.status in STARTED and len(capture2.calls) == 1
 
 
 async def test_a_session_only_cookie_is_a_named_failure_that_stores_nothing(tmp_path):
@@ -837,6 +841,8 @@ def test_sign_in_and_status_wear_the_outer_envelope_with_typed_status_objects():
     assert s["properties"]["status"]["enum"] == [
         "waiting",
         "verifying",
+        "validating",
+        "active",
         "in_progress",
         "refused",
         "failed",
@@ -900,3 +906,45 @@ def test_save_failure_text_never_names_the_session_path(tmp_path):
     text = flow._failure_text("save_failed:PermissionError")
     assert "PermissionError" in text and "nothing changed" in text
     assert str(h.rt.credentials.path) not in text and str(tmp_path) not in text
+
+
+async def test_a_flow_that_finishes_inside_the_launch_wait_answers_active_not_waiting(tmp_path):
+    """The task can run ahead of `start()`'s wait — a capture and a validation that never
+    suspend on real I/O complete in one scheduler tick — and the answer must then be the
+    phase the task is in, not a description of a window that has already closed beside a
+    `session: active`."""
+    h = RuntimeHarness(tmp_path)
+    flow_for(h, capture=make_capture(), validate=make_validate("member"))
+    out = await cr_sign_in(h.rt)
+    assert h.rt.sign_in.phase == "active"
+    assert out.data.status == "active" and out.session == "active"
+    assert "window" not in out.data.instructions.lower() or "closed" in out.data.instructions
+    assert out.data.expires_in_s is None and out.data.reason is None
+
+
+async def test_every_phase_the_task_can_reach_has_its_own_answer(tmp_path):
+    """`_answer_for_phase` must be exhaustive over the phase vocabulary — a phase without a
+    branch used to fall through to the `waiting` text."""
+    h = RuntimeHarness(tmp_path)
+    flow = flow_for(h, capture=make_capture(), validate=make_validate())
+    for phase in ("verifying", "waiting", "validating", "active", "refused", "failed"):
+        flow.phase, flow.reason = phase, ("session_active" if phase == "refused" else None)
+        flow.browser = "chrome"
+        assert flow._answer_for_phase().data.status == phase, phase
+
+
+async def test_a_browser_crash_says_retry_and_never_suggests_force(tmp_path):
+    """`force` bypasses the pre-flight check of a stored cookie; it has nothing to do with a
+    browser step that crashed mid-capture, so the text must not send the user there."""
+    h = RuntimeHarness(tmp_path)
+    flow_for(
+        h, capture=make_capture(error=RuntimeError("driver crashed")), validate=make_validate()
+    )
+    await cr_sign_in(h.rt)
+    st = await settle(h)
+    text = h.rt.sign_in._failure_text(st.data.reason)
+    assert st.data.reason == "browser_error:RuntimeError"
+    assert (
+        "force" not in text and "cr_sign_in again" in text and "consumer-reports-mcp auth" in text
+    )
+    assert "could not be judged" not in text

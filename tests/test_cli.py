@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import stat
 import sys
 from datetime import UTC, datetime, timedelta
@@ -275,12 +276,18 @@ def test_browser_flag_success_goes_through_the_same_validate_and_save(tmp_path, 
 
     def capture(timeout):
         seen.append(timeout)
+        # logging must already be configured when the capture runs: its INFO record of every
+        # `hash` CR set (domain, expiry) is the diagnostic this path exists to keep, and it
+        # used to be configured only for the validation step that follows
+        root = logging.getLogger()
+        seen.append((root.getEffectiveLevel(), bool(root.handlers)))
         return Capture(value=HASH, expires_at=expires)
 
     code = cli.auth_command(
         args, h.env, io.StringIO(), out, err, runtime_factory=h.factory, capture=capture
     )
-    assert code == 0 and seen == [7] and "member session active" in out.getvalue()
+    assert code == 0 and seen == [7, (logging.INFO, True)]
+    assert "member session active" in out.getvalue()
     stored = json.loads(h.session_file.read_text())
     assert stored["cookies"] == {"hash": HASH} and stored["expires_at"] == expires
     assert f"expires {expires}" in out.getvalue() and HASH not in out.getvalue()

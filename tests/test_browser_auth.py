@@ -166,7 +166,8 @@ async def test_a_session_only_hash_is_never_the_capture(monkeypatch, caplog):
             await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
     assert "nothing was captured" in str(ei.value) and "Remember Me" in str(ei.value)
     assert "s" * 36 not in str(ei.value) and "s" * 36 not in caplog.text
-    assert "session-only" in caplog.text
+    assert "non-durable" in caplog.text and "expires=session" in caplog.text
+    assert "session-only" in str(ei.value)
     assert not isinstance(ei.value, B.CaptureTimeout)  # a token DID appear
     assert browser.context.closed and browser.closed
     # a missing or unreadable `expires` is a session cookie too: an expiry that cannot be read
@@ -829,3 +830,65 @@ async def test_a_hash_cookie_off_domain_or_malformed_is_not_the_token():
     pw2 = FakePlaywright(FakeBrowser([[_hash_cookie("n" * 36)]]))
     again = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw2, poll_s=0)
     assert again.value == "n" * 36
+
+
+async def test_a_short_lived_hash_is_refused_naming_its_measured_life(monkeypatch, caplog):
+    """A `hash` with a date on it that is hours away is the same failure as a session cookie:
+    the 2026-09-05 capture authenticated for 24 h 02 min and then died (RECON §5). Storing it
+    would put a credential that dies tomorrow behind "member session active", so it is
+    refused — and the message carries the measured span, which is the fact the earlier
+    capture never recorded."""
+    monkeypatch.setattr(B, "DURABLE_GRACE_S", 0.05)
+    day = time.time() + 86400
+    browser = FakeBrowser([[_hash_cookie("w" * 36, expires=day)]])
+    pw = FakePlaywright(browser)
+    with caplog.at_level(logging.INFO, logger="consumer_reports_mcp.browser_auth"):
+        with pytest.raises(B.NotDurable) as ei:
+            await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    msg = str(ei.value)
+    assert "expires in 24.0 hours" in msg and B.expiry_from_posix(day) in msg
+    assert "nothing was captured" in msg and "w" * 36 not in msg
+    # the observation is logged with its attributes and never its value
+    assert "`hash` observed" in caplog.text and "domain=.consumerreports.org" in caplog.text
+    assert B.expiry_from_posix(day) in caplog.text and "w" * 36 not in caplog.text
+    assert browser.context.closed and browser.closed
+    # the threshold: two days is durable, a second under it is not
+    assert B._durable_expires(_hash_cookie("w" * 36, expires=time.time() + B.MIN_DURABLE_S + 1))
+    assert (
+        B._durable_expires(_hash_cookie("w" * 36, expires=time.time() + B.MIN_DURABLE_S - 1))
+        is None
+    )
+
+
+async def test_among_several_durable_hashes_the_apex_longest_lived_one_is_the_capture(caplog):
+    """`context.cookies()` lists every `hash` in the window; the capture is the one on the apex
+    domain — what the jar seeds and every re-mint reads — with the farthest expiry, not
+    whichever the browser listed first."""
+    far = time.time() + 365 * 86400
+    near = time.time() + 30 * 86400
+    browser = FakeBrowser(
+        [
+            [
+                _hash_cookie("h" * 36, domain="secure.consumerreports.org", expires=far),
+                _hash_cookie("n" * 36, domain=".consumerreports.org", expires=near),
+                _hash_cookie("f" * 36, domain=".consumerreports.org", expires=far),
+            ]
+        ]
+    )
+    pw = FakePlaywright(browser)
+    with caplog.at_level(logging.INFO, logger="consumer_reports_mcp.browser_auth"):
+        captured = await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw, poll_s=0)
+    assert captured.value == "f" * 36 and captured.expires_at == B.expiry_from_posix(far)
+    # all three observations logged, once each, values never
+    assert caplog.text.count("`hash` observed") == 3
+    for v in ("h", "n", "f"):
+        assert v * 36 not in caplog.text
+    assert "capturing the `hash` domain=.consumerreports.org" in caplog.text
+    # only one apex-domain durable hash: that one, whatever the listing order
+    browser2 = FakeBrowser(
+        [[_hash_cookie("a" * 36, domain="www.consumerreports.org"), _hash_cookie("b" * 36)]]
+    )
+    pw2 = FakePlaywright(browser2)
+    assert (
+        await B.capture_hash(timeout_s=5, playwright_factory=lambda: pw2, poll_s=0)
+    ).value == "b" * 36

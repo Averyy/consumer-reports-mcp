@@ -72,6 +72,8 @@ async def test_registered_tools_match_the_spec(tmp_path):
     server = S.build_server(h.rt)
     tools = {t.name: t for t in await server.list_tools()}
     assert sorted(tools) == sorted(ALL_TOOLS)
+    # the module's own name tuples must describe what it registers, or they are dead prose
+    assert S.PRODUCT_TOOLS + S.CARS_TOOLS + S.AUTH_TOOLS == tuple(ALL_TOOLS)
     car = tools["cr_car"].output_schema["properties"]
     assert "error" in car and "scores_available" in car and "auth_state" not in car
     assert tools["cr_cars"].input_schema["properties"]["state"]["default"] is None
@@ -100,7 +102,15 @@ async def test_sign_in_is_not_read_only_so_clients_prompt(tmp_path):
     sign_schema = tools["cr_sign_in"].output_schema
     assert sorted(sign_schema["properties"]) == ["data", "error", "session", "warnings"]
     status_enum = _nested_props(sign_schema, "SignInData")["status"]["enum"]
-    assert status_enum == ["waiting", "verifying", "in_progress", "refused", "failed"]
+    assert status_enum == [
+        "waiting",
+        "verifying",
+        "validating",
+        "active",
+        "in_progress",
+        "refused",
+        "failed",
+    ]
     st_schema = tools["cr_auth_status"].output_schema
     assert sorted(st_schema["properties"]) == ["data", "error", "session", "warnings"]
     phase_enum = _nested_props(st_schema, "AuthStatusData")["sign_in"]["enum"]

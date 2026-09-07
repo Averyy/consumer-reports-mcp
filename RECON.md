@@ -265,13 +265,44 @@ which re-renders server-side, checked. So a failed submit does NOT lose the tick
 re-asserts it on every poll anyway, which covers the user un-ticking it and CR changing the
 default.
 
-**A capture of 2026-09-05 stopped working within about a day, and why is unknowable.** The
+**A capture of 2026-09-05 stopped working after about a day, and why is unknowable.** The
 browser flow at the time returned only the cookie's value; the `expires` Playwright reports
 (POSIX seconds, `-1` for a session cookie) was discarded, `session.json` stored only
 `captured_at`, and the status counted down from the 365-day constant — it said 364 the day the
 cookie died. A session-only `hash` (remember-me not taking) fits the symptom exactly and is the
 leading hypothesis, but the one fact that would confirm it was never recorded. The flow now
 returns and stores the expiry, and refuses a `hash` with none (`SPEC.md` §6).
+
+*The timeline, reconstructed 2026-09-07 from the cache and the session file:* captured
+2026-09-05T21:31:28Z; `session.json` rewritten at 21:34:06Z by the `userLicenses` write-back of
+the first member fetch (the transport never writes `hash` back, so the stored `hash` is the one
+the browser handed over); member pages (`data-subscriber="true"`) fetched with it through
+**2026-09-06T21:33:53Z — 24 h 02 min after capture**; anonymous rows from 21:53:54Z on (not
+attributable to this cookie from the cache alone); and a probe on 2026-09-07 at ~40 h answered
+`session_expired`. A death inside a day and a lifetime of at least 24 h 02 min together fit a
+24-hour server-side session — the same span as `userToken`'s 1-day expiry — better than the
+vaguer "days" recorded above. It does not distinguish remember-me not taking from CR revoking
+a durable `hash` early; only the next capture's recorded `expires_at` can.
+
+*The next capture, 2026-09-07T13:57Z, through the same automation window (`auth --browser`,
+`--disable-blink-features=AutomationControlled`, "stay signed in" pre-checked — confirmed by
+the user):* CR minted a `hash` expiring **2027-09-07T13:57:41Z — 365 days**, the same term as
+the 2026-09-01 plain-Chrome login. So the window CAN mint the durable cookie, and the 09-05
+capture is the outlier: either the box was unticked at the moment of submit that day, or CR
+issued a short session under a condition on its side. Which of those it was is unrecoverable.
+What differs from here on is that the per-`hash` log line and the stored `expires_at` would
+name it. (That log line was itself dropped on the 09-07 run: the CLI configured logging only
+for the validation step, after the browser had closed — fixed the same day.)
+
+**A lapsed `hash` is IGNORED, not rejected** (measured 2026-09-07 on that cookie, through the
+transport: `hash` + `userLicenses` in the jar): the category page comes back `200`, **no
+redirect at all** (`resp.history` empty — no re-mint hop through `secure.`), the ordinary
+anonymous body with `data-subscriber="false"`, and `hash` **still in the jar** afterwards. So
+the three credential states are now all measured and all differ: *absent* → the anonymous page
+(§5); *malformed* → redirect to `/ec/login?error`, no payload, cookie cleared (§10b); *lapsed*
+→ the anonymous page with the cookie left in place. The transport's classification is right for
+each: the lapsed case is `session_expired` (marker `false`, `hash` asserted in the jar), never
+`credential_rejected` and never `payload_missing`.
 
 ### Verified end to end
 
@@ -1412,13 +1443,14 @@ Everything the spikes closed has moved to §10. What remains:
 
 **Needs a state we cannot manufacture**
 
-- **What a genuinely EXPIRED `hash` does.** §10b measured a *malformed* one: redirect to
-  `/ec/login`, no payload, no marker. §5 measured *absent* cookies: the ordinary anonymous page.
-  A real credential that has lapsed on CR's side was never observed and could plausibly take
-  either path, so both are handled.
-- **Why the 2026-09-05 capture died within a day** (§5). The expiry was not recorded at the
-  time; the next capture will carry one, and a session-only `hash` is now refused, so a repeat
-  will either be explained by `expires_at` or be a different failure.
+- ~~What a genuinely EXPIRED `hash` does.~~ **Answered 2026-09-07** (§5): the ordinary
+  anonymous page, no redirect, cookie left in the jar — `session_expired`. §10b's redirect is
+  the *malformed* case only.
+- **Why the 2026-09-05 capture died after about a day** (§5). It authenticated for at least
+  24 h 02 min, which fits a 24-hour server-side session. The expiry was not recorded at the
+  time and the cookie is dead, so this stays open. The 2026-09-07 capture through the same
+  window minted a 365-day `hash`, so the window is not the cause by itself; a repeat will now
+  be named by `expires_at`, the per-`hash` log line, or a `not_durable` refusal.
 - **What a wafer identity rotation does to a live member session.** §10c established that the
   jar loss seen in testing was CR clearing a rejected cookie, *not* rotation — so the rotation
   hazard itself is still un-observed. It stays mitigated by construction (`max_rotations=0`

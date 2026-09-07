@@ -25,7 +25,9 @@ Session = Literal["none", "unverified", "active", "expired"]
 DataTier = Literal["anonymous", "member"]
 Availability = Literal["available", "absent", "unavailable"]
 CarAvailability = Literal["available", "absent"]
-SignInStatus = Literal["waiting", "verifying", "in_progress", "refused", "failed"]
+SignInStatus = Literal[
+    "waiting", "verifying", "validating", "active", "in_progress", "refused", "failed"
+]
 SignInPhase = Literal["idle", "verifying", "waiting", "validating", "active", "refused", "failed"]
 CredentialSource = Literal["env", "file", "memory"]
 # What `days_left_max` is counted from: the cookie's own expiry as the browser reported it at
@@ -654,13 +656,15 @@ class SignInData(Strict):
     status: SignInStatus = Field(
         description="waiting: a window opened, poll cr_auth_status; verifying: a stored session "
         "is being checked first and a window opens only if CR rejects it, poll cr_auth_status; "
-        "in_progress: one was already running; refused: nothing started (see reason); failed: "
-        "it started and could not finish"
+        "validating: a token was captured and is being checked, poll cr_auth_status; active: "
+        "the sign-in already completed and the session is stored; in_progress: one was already "
+        "running; refused: nothing started (see reason); failed: it started and could not finish"
     )
     reason: str | None = Field(
         description="machine-readable cause for refused/failed — session_active, env_override, "
         "browser_extra_missing, browser_not_found, window_closed, capture_timeout, "
-        "not_durable (CR issued a session-only cookie: remember-me did not take), offline, "
+        "not_durable (CR issued a session-only or hours-long cookie: remember-me did not "
+        "take), offline, "
         "session_expired, credential_rejected, could_not_check:<reason>, save_failed:<type>, "
         "internal_error:<type>"
     )

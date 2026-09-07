@@ -91,7 +91,7 @@ session:      the credential's current health (unchanged by this call)
 warnings:     the same machine-readable list every tool carries (the renewal warning, §8)
 error:        always null — a refusal is a status with a reason, not an error-taxonomy entry
 data:
-  status:       waiting | verifying | in_progress | refused | failed
+  status:       waiting | verifying | validating | active | in_progress | refused | failed
   reason:       machine-readable cause for refused/failed, else null
   instructions: the only free-text field — what to do next
   browser:      which installed browser opened, once known

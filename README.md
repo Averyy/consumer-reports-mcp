@@ -129,7 +129,8 @@ it.
 
 A "remember me" `hash` carries a fixed 365-day expiry from the sign-in, and using it doesn't
 extend that. The browser sign-in records the cookie's real expiry (and refuses a session-only
-one — that is remember-me not having taken); a pasted cookie carries none, so its countdown is
+or hours-long one — that is remember-me not having taken; a lapsed `hash` is simply ignored by
+CR, so it reads as `session_expired`); a pasted cookie carries none, so its countdown is
 assumed from the capture date. Inside the last 30 days every response carries
 `session_expiring:<days>` in `warnings[]`, and `cr_auth_status` shows the same countdown with
 `expiry_basis` saying whether it is measured or assumed.

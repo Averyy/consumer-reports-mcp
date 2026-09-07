@@ -137,6 +137,8 @@ def extract_cars_page(html: bytes | str) -> CarsPageInfo:
     text = _text(html)
     m = _CARS_KEY.search(text) or _CARS_KEY_ESCAPED.search(text)
     key = m.group(1) if m else None
-    s = _IS_SUBSCRIBER.search(text)
-    is_subscriber = None if s is None else s.group(1) == "true"
+    # the same rule as `read_subscriber_marker` (D18): both values on one page is no marker,
+    # never a pick — a `.search()` took whichever assignment came first in the HTML
+    values = {s.group(1) for s in _IS_SUBSCRIBER.finditer(text)}
+    is_subscriber = (values == {"true"}) if len(values) == 1 else None
     return CarsPageInfo(api_key=key, is_subscriber=is_subscriber)

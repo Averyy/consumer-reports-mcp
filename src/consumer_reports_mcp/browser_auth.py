@@ -152,6 +152,13 @@ class NotDurable(RuntimeError):
 # durable one: the login's redirect hops can set cookies across polls, and the durable cookie
 # may land a moment after the session one. Nothing is captured either way until it does.
 DURABLE_GRACE_S = 5.0
+# The least life a `hash` must have to be the capture. The "remember me" mint runs 365 days
+# (`RECON.md` §5); a `hash` that expires within two days is the same failure as a session
+# cookie with a date on it — the 2026-09-05 capture authenticated for 24 h 02 min and then
+# died — and storing it would put a credential that dies tomorrow behind "member session
+# active". Two days, not a year: CR shortening the remember-me term must not refuse every
+# capture, and anything shorter than this needs a new sign-in daily, which IS the failure.
+MIN_DURABLE_S = 2 * 86400
 
 
 @dataclasses.dataclass(frozen=True)
@@ -534,6 +541,60 @@ def _expires(cookie: dict) -> float | None:
     return exp if exp > 0 else None
 
 
+def _durable_expires(cookie: dict, now: float | None = None) -> float | None:
+    """The expiry, when it is far enough out to be the capture (`MIN_DURABLE_S`); else None —
+    a session cookie and a short-lived one are the same failure here."""
+    exp = _expires(cookie)
+    if exp is None or exp - (time.time() if now is None else now) < MIN_DURABLE_S:
+        return None
+    return exp
+
+
+def _describe(cookie: dict) -> str:
+    """The cookie's attributes for the log — NEVER its value. This line is what would have
+    answered "was the 2026-09-05 capture ever durable": the domain CR set it on and the
+    expiry it carried, recorded at the moment of capture."""
+    exp = _expires(cookie)
+    if exp is None:
+        life = "expires=session"
+    else:
+        life = f"expires={expiry_from_posix(exp)} ({(exp - time.time()) / 86400:.1f} d)"
+    return (
+        f"domain={cookie.get('domain')} path={cookie.get('path')} "
+        f"secure={cookie.get('secure')} httpOnly={cookie.get('httpOnly')} {life}"
+    )
+
+
+def _signature(cookie: dict) -> tuple:
+    """What makes two observations of a `hash` the same for logging purposes: the attributes
+    and the value's identity — a re-mint with a new value is a new observation."""
+    return (
+        cookie.get("domain"),
+        cookie.get("path"),
+        cookie.get("secure"),
+        cookie.get("httpOnly"),
+        _expires(cookie),
+        hash(str(cookie.get("value"))),  # identity only; the value itself is never kept
+    )
+
+
+def _prefer(cookie: dict) -> tuple:
+    """Among several durable `hash` cookies in one window, the capture is the one on the apex
+    domain (what the jar seeds and every re-mint reads, `credentials.COOKIE_DOMAIN`) with the
+    farthest expiry. `context.cookies()` is unordered as far as this flow is concerned, so the
+    first match was whichever the browser listed first."""
+    domain = str(cookie.get("domain") or "").lstrip(".").lower()
+    return (domain == TOKEN_DOMAIN, _expires(cookie) or 0.0)
+
+
+def _short_life_text(cookie: dict) -> str:
+    exp = _expires(cookie)
+    if exp is None:
+        return "a session-only cookie — one with no expiry"
+    hours = max(exp - time.time(), 0.0) / 3600
+    return f"a cookie that expires in {hours:.1f} hours (at {expiry_from_posix(exp)})"
+
+
 async def _keep_remember_me(page: Any) -> bool:
     """Re-assert the tick; True when the box is confirmed checked now. Never fails the poll:
     a page with no form (mid-navigation, or once signed in) simply answers False."""
@@ -589,7 +650,9 @@ async def capture_hash(
                     type(exc).__name__,
                 )
             capture_deadline = time.monotonic() + timeout_s
-            session_only_since: float | None = None  # when a session-only `hash` first showed
+            session_only_since: float | None = None  # when a non-durable `hash` first showed
+            short_lived: dict | None = None  # the non-durable one seen, for the message
+            seen: set[tuple] = set()  # each distinct `hash` observation is logged once
             while time.monotonic() < capture_deadline:
                 # the guard is re-applied every poll, not once: see REMEMBER_ME_RECHECK_TIMEOUT_MS
                 await _keep_remember_me(page)
@@ -600,30 +663,38 @@ async def capture_hash(
                         "the browser window was closed before a session token appeared — "
                         "nothing was captured"
                     ) from exc
-                for cookie in cookies:
-                    if not _is_token(cookie):
-                        continue
-                    expires = _expires(cookie)
-                    if expires is not None:
-                        return Capture(
-                            value=str(cookie["value"]), expires_at=expiry_from_posix(expires)
-                        )
-                    if session_only_since is None:
-                        session_only_since = time.monotonic()
-                        log.warning(
-                            "sign-in: CR issued a session-only `hash` (no expiry); waiting %.0f s "
-                            "for a durable one",
-                            DURABLE_GRACE_S,
-                        )
+                candidates = [c for c in cookies if _is_token(c)]
+                for cookie in candidates:
+                    sig = _signature(cookie)
+                    if sig not in seen:
+                        seen.add(sig)
+                        log.info("sign-in: `hash` observed: %s", _describe(cookie))
+                durable = [c for c in candidates if _durable_expires(c) is not None]
+                if durable:
+                    best = max(durable, key=_prefer)
+                    expires = _durable_expires(best)
+                    assert expires is not None
+                    log.info("sign-in: capturing the `hash` %s", _describe(best))
+                    return Capture(value=str(best["value"]), expires_at=expiry_from_posix(expires))
+                if candidates and session_only_since is None:
+                    session_only_since = time.monotonic()
+                    short_lived = min(candidates, key=_prefer)
+                    log.warning(
+                        "sign-in: CR issued a non-durable `hash` (%s); waiting %.0f s for a "
+                        "durable one",
+                        _describe(short_lived),
+                        DURABLE_GRACE_S,
+                    )
                 if (
                     session_only_since is not None
                     and time.monotonic() - session_only_since >= DURABLE_GRACE_S
                 ):
+                    assert short_lived is not None
                     raise NotDurable(
-                        "Consumer Reports issued a session-only cookie — one with no expiry, "
-                        'which means "remember me" did not take and the session would die '
-                        "within days — so nothing was captured. Sign in again leaving "
-                        '"Remember Me" ticked.'
+                        f"Consumer Reports issued {_short_life_text(short_lived)} rather than "
+                        'the year-long one "remember me" mints, which means "remember me" did '
+                        "not take and the session would die within days — so nothing was "
+                        'captured. Sign in again leaving "Remember Me" ticked.'
                     )
                 await asyncio.sleep(poll_s)
             raise CaptureTimeout(

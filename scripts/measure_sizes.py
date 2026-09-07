@@ -4,7 +4,7 @@ Local only: reads the gitignored scratch/ captures, fills scores deterministical
 `fill_scores_in` the tests use — shape-equivalent to a member response), runs the real tool
 code over a tmp runtime, and counts tokens with tiktoken cl100k_base.
 
-    uv run --with tiktoken scripts/measure_sizes.py
+    uv run --with tiktoken --no-sync scripts/measure_sizes.py
 """
 
 from __future__ import annotations

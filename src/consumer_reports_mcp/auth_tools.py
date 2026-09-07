@@ -292,10 +292,28 @@ class SignInFlow:
         return not (self.phase == "waiting" and self.browser is None)
 
     def _answer_for_phase(self) -> E.SignInEnvelope:
+        """The envelope for whatever phase the task is in NOW — every phase, because the task
+        can run ahead of `start()`'s wait: a capture and validation that never suspend on
+        real I/O finish in one scheduler tick, and the answer must then say `active`, not
+        describe a window that has already closed."""
         if self.phase == "failed":
             return self._answer("failed", self.reason, self._failure_text(self.reason))
         if self.phase == "refused":
             return self._answer("refused", self.reason, self._session_active_text())
+        if self.phase == "active":
+            return self._answer(
+                "active",
+                None,
+                "The sign-in completed: Consumer Reports confirmed the captured session as a "
+                "member and it is stored and in use. cr_auth_status reports its expiry.",
+            )
+        if self.phase == "validating":
+            return self._answer(
+                "validating",
+                None,
+                "A session token was captured and is being checked against Consumer Reports; "
+                "the window has closed. Call cr_auth_status(wait_s=45) for the outcome.",
+            )
         if self.phase == "verifying":
             return self._answer(
                 "verifying",
@@ -368,10 +386,11 @@ class SignInFlow:
             )
         if r == "not_durable":
             return (
-                "Consumer Reports issued a session-only cookie — one with no expiry, meaning "
-                '"Remember Me" did not take — so it would have died within days while the '
-                "status claimed a year; nothing was captured and nothing changed. Call "
-                'cr_sign_in again and ask the user to leave "Remember Me" ticked when signing in.'
+                "Consumer Reports issued a cookie with no expiry, or one only hours away, "
+                'rather than the year-long one "Remember Me" mints — so it would have died '
+                "within days while the status claimed a year; nothing was captured and nothing "
+                "changed (the server log names the expiry CR set). Call cr_sign_in again and "
+                'ask the user to leave "Remember Me" ticked when signing in.'
             )
         if r in DEAD_VERDICTS:
             # NOT "tick remember me": CR renders `setAutoLogin` already checked and the flow
@@ -395,6 +414,15 @@ class SignInFlow:
             return (
                 "A cookie was captured but could not be checked against Consumer Reports "
                 f"({detail}); nothing was stored. Retry once the network is back."
+            )
+        if r.startswith("browser_error:"):
+            # the browser step itself crashed — a window may have opened; `force` re-runs the
+            # same step and has nothing to do with it, so this is a plain retry like the
+            # sibling capture failures
+            return (
+                f"The browser step failed ({r.split(':', 1)[1]}); nothing was captured and "
+                "nothing changed. Call cr_sign_in again to retry, or run "
+                "`consumer-reports-mcp auth` in a terminal and paste the cookie there."
             )
         if r.startswith("save_failed:"):
             # the file's path is the user's home directory: it goes to the server log, never

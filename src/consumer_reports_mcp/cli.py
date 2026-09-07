@@ -103,6 +103,11 @@ def auth_command(
         existed = store.forget()
         print("stored session deleted" if existed else "no stored session", file=stdout)
         return 0
+    # Logging goes to stderr from HERE, before the browser step — the capture's own record of
+    # every `hash` CR set, with its domain and expiry, is INFO, and configuring logging only
+    # for the validation step (as this once did) dropped exactly those lines on the one run
+    # they were written for.
+    configure_logging()
     if args.browser:
         # The window opens on the user's screen and this blocks for up to --timeout. Without
         # a line here the terminal is silent for five minutes while a browser appears
@@ -135,7 +140,7 @@ def auth_command(
             "will not survive (only `hash` is durable). Re-run with the console one-liner.",
             file=stderr,
         )
-    if env.get(ENV_VAR):
+    if store.env_override:  # the one rule (`env_value_set`): blank and `${…}` are unset
         print(f"note: {ENV_VAR} is set and takes precedence over the stored file", file=stderr)
     print(
         "checking the token against consumerreports.org — one request, usually a few seconds "
@@ -250,6 +255,6 @@ def _validate(
 ) -> str:
     """The CLI's synchronous wrapper over the one shared verdict routine (`auth_tools
     .validate_cookies`, which `cr_sign_in` also uses): one real fetch of the probe category with
-    the pasted cookies held in MEMORY — nothing is written unless it authenticates."""
-    configure_logging()
+    the pasted cookies held in MEMORY — nothing is written unless it authenticates. Logging is
+    configured by `auth_command` before the browser step, not here."""
     return asyncio.run(validate_cookies(settings, cookies, runtime_factory))

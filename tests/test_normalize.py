@@ -243,3 +243,31 @@ def test_blank_rating_cells_are_not_scores(c37162):
     assert scores_available(fi, "anonymous")["attribute_ratings"] == "unavailable"
     assert scores_available(fi, "member")["attribute_ratings"] == "absent"
     assert all(attribute_all_null(fi, aid) for aid in aids)
+
+
+def test_a_product_lacking_a_requested_attribute_projects_a_complete_null_record(env):
+    """CR ships different attribute sets across products in one category. A requested
+    attribute a product does not carry is projected as a null-valued record with the SAME
+    key set as a present one — `Attribute.description` is required-but-nullable, and the
+    record used to omit it, so `cr_ratings(attributes=[…])` raised a ValidationError out of
+    the tool for any page where one product lacked the attribute."""
+    from consumer_reports_mcp import envelope as E
+
+    defs = build_definitions(env)
+    ranks = rank_table(env["filter_instance"])
+    p = dict(env["filter_instance"]["data"]["500001"])
+    p["attrs"] = [a for a in p["attrs"] if a["attributeId"] != 6918]
+    s = product_shape(p, "summary", env, defs, ranks, extra_attribute_ids=(6918,))
+    (rec,) = s["projected_attributes"]
+    present = product_shape(
+        env["filter_instance"]["data"]["500001"],
+        "summary",
+        env,
+        defs,
+        ranks,
+        extra_attribute_ids=(6918,),
+    )["projected_attributes"][0]
+    assert set(rec) == set(present)
+    assert rec["id"] == 6918 and rec["value"] is None and rec["description"] is None
+    E.Attribute(**rec)  # the envelope accepts it
+    E.ProductSummary(**s)

@@ -1026,10 +1026,16 @@ pointing at the console one-liner — never a traceback. (From PyPI the equivale
    `hash` from another site used to be returned as the capture, and the flow then failed
    permanently while blaming remember-me. **And it must be durable**: the capture is the value
    together with the cookie's `expires` (`Capture(value, expires_at)`), and a `hash` reported
-   with none (`-1`, a session cookie) is "remember me" not having taken — after a short grace
-   for the durable one to land on a later hop, the poll ends in `NotDurable` and nothing is
-   captured. See *The countdown is measured when it can be* above for why silently accepting it
-   is the worst outcome this flow has.
+   with none (`-1`, a session cookie) — or with an expiry under `MIN_DURABLE_S` (two days: the
+   2026-09-05 capture lived 24 h, and a credential that dies tomorrow must not sit behind
+   "member session active") — is "remember me" not having taken. After a short grace for the
+   durable one to land on a later hop, the poll ends in `NotDurable` naming the measured life,
+   and nothing is captured. See *The countdown is measured when it can be* above for why
+   silently accepting it is the worst outcome this flow has. **Every `hash` the window
+   holds is logged once with its attributes — domain, path, flags, expiry — and never its
+   value**: that line is the fact the 2026-09-05 capture never recorded. Among several
+   durable ones the capture is the one on the apex domain (what the jar seeds) with the
+   farthest expiry, not whichever the browser listed first.
 5. **Harvest `hash` only, then validate and store exactly as the paste path does** — same
    `c35183` validation fetch, same `0600` write, same warning if `hash` is somehow absent, plus
    the measured `expires_at`, which is the one thing this path stores that the paste cannot.
@@ -1136,7 +1142,10 @@ So the design is **non-blocking start, status poll, live adoption**:
   → `transport.adopt()`. It waits up to 1.5 s for the browser to report so that a launch
   failure is answered by the call itself (`status: "failed", reason: "browser_not_found"`)
   rather than by a later poll; a slow launch is reported as `waiting` with `browser: null` and
-  the poll fills it in.
+  the poll fills it in. The answer is whatever phase the task is in when the wait ends — a
+  task that runs ahead of it (a capture and validation that never suspend on real I/O finish
+  in one scheduler tick) is answered `validating` or `active`, never a `waiting` that
+  describes a window already closed beside `session: active`.
 - **`cr_auth_status(wait_s=0)`** returns `{session, warnings, error, data}` with
   `data: {source, captured_at, expires_at, expiry_basis, days_left_max, sign_in, reason,
   browser}` — `expiry_basis` is `measured` (the browser read CR's own expiry, in

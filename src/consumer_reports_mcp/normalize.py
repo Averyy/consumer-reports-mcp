@@ -236,6 +236,10 @@ def product_shape(
                         "value": None,
                         "raw_value": None,
                         "unit": d.unit if d else None,
+                        # the same key set `normalize_entry` returns: `Attribute.description`
+                        # is required-but-nullable, and a product that lacks a requested
+                        # attribute used to raise a ValidationError out of `cr_ratings`
+                        "description": None,
                         "group": d.group if d else None,
                     }
                 )

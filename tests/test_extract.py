@@ -138,3 +138,18 @@ def test_brace_match_rejects_bad_start_and_unbalanced():
 def test_filter_instance_unparseable_json_is_none():
     page = b'<script>window.filterInstanceDATA = {"filters": [}, "data": {}};\n</script>'
     assert extract_filter_instance(page) is None
+
+
+def test_cars_marker_declared_with_both_values_is_no_marker():
+    """The same rule as `read_subscriber_marker` (D18): both values on one page is never a
+    pick. A bare `.search()` took whichever assignment came first in the HTML."""
+    both = make_car_page(False).replace(
+        b"window.isSubscriber = false;",
+        b"window.isSubscriber = false;\n        window.isSubscriber = true;",
+    )
+    assert b"isSubscriber = true" in both and b"isSubscriber = false" in both
+    assert extract_cars_page(both).is_subscriber is None
+    twice = make_car_page(True).replace(
+        b"window.isSubscriber = true;", b"window.isSubscriber = true;\n window.isSubscriber=true;"
+    )
+    assert extract_cars_page(twice).is_subscriber is True  # one value, repeated: still a marker
