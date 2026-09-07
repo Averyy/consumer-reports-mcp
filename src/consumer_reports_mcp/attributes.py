@@ -13,6 +13,8 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from .extract import clean_text
+
 NUMERIC_KINDS = frozenset(
     {"numeric-rating-score", "numeric-general", "numeric-price", "numeric-overall-score"}
 )
@@ -53,10 +55,7 @@ def _num(v: Any) -> float | None:
 
 
 def _clean(v: Any) -> str | None:
-    if isinstance(v, str):
-        s = v.strip()
-        return s or None
-    return None
+    return clean_text(v)
 
 
 def build_definitions(envelope: dict) -> dict[int, Definition]:

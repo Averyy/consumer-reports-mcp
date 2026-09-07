@@ -19,8 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from . import lexical
+from .extract import clean_text
 from .ingest import _int, category_id_of, display_name_of, product_index_rows, products_of
 
+PRODUCT_NEEDLE_MIN = 2  # characters; see `search_products`
 USER_VERSION = 2  # 2: category_slug_alias — a published slug must keep resolving
 SOURCES = ("az", "sitemap", "payload")
 RANGE_KNOWN, RANGE_NONE, RANGE_NOT_FETCHED = "known", "none_published", "not_fetched"
@@ -952,8 +954,11 @@ class Cache:
         return [h[2] for h in hits[:limit]]
 
     def search_products(self, q: str, limit: int = 25) -> list[dict]:
+        """Case-insensitive substring over decoded `brand model` (SPEC §14). A needle under
+        `PRODUCT_NEEDLE_MIN` characters matches nothing: a single character is not a model
+        identifier, and `"x"` substring-matched 25 rows through `XE`, `FLEX` and `X0LW`."""
         needle = q.strip().lower()
-        if not needle:
+        if len(needle) < PRODUCT_NEEDLE_MIN:
             return []
         with self._connect() as conn:
             rows = conn.execute(
@@ -961,13 +966,15 @@ class Cache:
             ).fetchall()
             hits = []
             for r in rows:
-                hay = f"{r['brand_name'] or ''} {r['model_name'] or ''}".strip().lower()
+                # rows written before names were decoded still carry entities: decode on read
+                brand, model = clean_text(r["brand_name"]), clean_text(r["model_name"])
+                hay = f"{brand or ''} {model or ''}".strip().lower()
                 if needle in hay:
-                    exact = needle in ((r["model_name"] or "").lower(), hay)
-                    hits.append((0 if exact else 1, hay, r))
-            hits.sort(key=lambda h: (h[0], h[1], h[2]["product_id"]))
+                    exact = needle in ((model or "").lower(), hay)
+                    hits.append((0 if exact else 1, hay, (r, brand, model)))
+            hits.sort(key=lambda h: (h[0], h[1], h[2][0]["product_id"]))
             out = []
-            for _, _, r in hits[:limit]:
+            for _, _, (r, brand, model) in hits[:limit]:
                 newest = self._pick(self._rows_for(conn, r["category_id"]))
                 idx = conn.execute(
                     "SELECT slug, display_name FROM category_index WHERE category_id=?",
@@ -976,8 +983,8 @@ class Cache:
                 out.append(
                     {
                         "id": r["product_id"],
-                        "brand": r["brand_name"],
-                        "model": r["model_name"],
+                        "brand": brand,
+                        "model": model,
                         "category_id": r["category_id"],
                         "category_slug": idx["slug"] if idx else None,
                         "category_name": idx["display_name"] if idx else None,

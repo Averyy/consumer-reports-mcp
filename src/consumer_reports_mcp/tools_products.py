@@ -13,6 +13,7 @@ from . import lexical
 from .attributes import NUMERIC_KINDS, Definition, build_definitions, coerce
 from .cache import row_id
 from .config import FILTER_VALUES_CAP, SEARCH_CAP, TYPEAHEAD_MIN_CHARS, TYPEAHEAD_URL
+from .extract import clean_text
 from .ingest import category_id_of, display_name_of, products_of
 from .normalize import (
     DETAILS,
@@ -376,10 +377,10 @@ async def cr_filters(rt: Runtime, category: str | int, refresh: bool = False) ->
                     d = Definition(
                         id=aid,
                         name=opt.get("name"),
-                        display_name=opt.get("label"),
+                        display_name=clean_text(opt.get("label")),
                         kind=opt.get("dataType"),
-                        unit=opt.get("unitName") or None,
-                        description=opt.get("description") or None,
+                        unit=clean_text(opt.get("unitName")),
+                        description=clean_text(opt.get("description")),
                         group=opt.get("attributeGroup"),
                         sort_order=None,
                         source="attrs",
@@ -399,17 +400,23 @@ async def cr_filters(rt: Runtime, category: str | int, refresh: bool = False) ->
                     emitted.add(d.id)
                     feats.append(_feature_block(d, products, []))
         elif fid == "custom":
-            options = [E.FilterOption(id=o.get("id"), label=o.get("label")) for o in data]
+            options = [
+                E.FilterOption(id=o.get("id"), label=clean_text(o.get("label"))) for o in data
+            ]
         else:
             # brands / categories / type: the complete legal list, never capped (the 12-value
             # cap is for attribute VALUE lists, SPEC §7)
-            options = [E.FilterOption(id=o.get("id"), label=o.get("label")) for o in data]
+            options = [
+                E.FilterOption(id=o.get("id"), label=clean_text(o.get("label"))) for o in data
+            ]
             if fid == "categories":
-                groups = [E.FilterOption(id=o.get("id"), label=o.get("label")) for o in data]
+                groups = [
+                    E.FilterOption(id=o.get("id"), label=clean_text(o.get("label"))) for o in data
+                ]
         blocks.append(
             E.FilterBlock(
                 id=fid,
-                label=f.get("label"),
+                label=clean_text(f.get("label")),
                 type=f.get("type"),
                 parameter=parameter,
                 options=options,

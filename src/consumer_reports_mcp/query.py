@@ -14,6 +14,7 @@ from typing import Any
 from . import envelope as E
 from .attributes import BOOLEAN_KIND, NUMERIC_KINDS, Definition, coerce
 from .config import FULL_LIMIT_MAX, FULL_LIMIT_NESTED, LIMIT_FLAT, LIMIT_MAX, LIMIT_NESTED
+from .extract import clean_text
 from .ingest import products_of
 from .normalize import as_int, attribute_all_null, group_id_of, price_all_null
 
@@ -96,7 +97,7 @@ def groups_in_data(fi: dict) -> dict[int, str]:
     for p in products_of(fi):
         gid = group_id_of(p)
         if gid is not None and gid not in out:
-            out[gid] = str(p.get("_groupName") or gid)
+            out[gid] = clean_text(p.get("_groupName")) or str(gid)
     return out
 
 
@@ -132,7 +133,7 @@ def resolve_group(fi: dict, value: Any) -> int:
     for opt in (cats or {}).get("data") or []:
         gid = as_int(opt.get("id"))
         if gid is not None and gid not in known:
-            known[gid] = str(opt.get("label") or gid)
+            known[gid] = clean_text(opt.get("label")) or str(gid)
     gid = as_int(value)
     if gid is not None and gid in known:
         return gid
@@ -174,7 +175,7 @@ def resolve_brands(fi: dict, values: list[Any]) -> set[int]:
     for opt in (brands or {}).get("data") or []:
         bid = as_int(opt.get("id"))
         if bid is not None:
-            by_id[bid] = str(opt.get("label") or "")
+            by_id[bid] = clean_text(opt.get("label")) or ""
     for p in products_of(fi):
         bid = as_int(p.get("brandId"))
         if bid is not None and bid not in by_id:

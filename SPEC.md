@@ -1735,7 +1735,13 @@ things, in order:
 
 Product matching is **case-insensitive substring** on `brandName` + `modelName`, with no fuzzy
 matching — model numbers like `B36CD10ENS` make edit-distance matching actively harmful, since
-one character is a different product. Results are labelled by kind (`category` vs `product`) and
+one character is a different product. A query under two characters matches no product: a
+single character is not a model identifier, and `"x"` substring-matched 25 rows through `XE`,
+`FLEX` and `X0LW`. **Names are matched and served DECODED.** CR ships display strings inside
+its JSON entity-encoded — `Nitro V 16&quot;`, `Black &amp; Decker` (157 of 3,348 cached
+product names carried one) — and every name, label, unit and description passes through
+`extract.clean_text` once, at ingest and again on read for rows written before it existed, so
+`16"` finds the laptop and no tool answers a raw `&quot;`. Results are labelled by kind (`category` vs `product`) and
 capped at 25 per kind. A product miss returns `searched_categories: [...]` naming what was
 actually searched, so an empty result can never be mistaken for "CR does not rate this". Live
 cross-category *product* search stays post-v1.

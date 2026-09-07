@@ -14,6 +14,7 @@ from .attributes import (
     normalize_entry,
     rating_definitions,
 )
+from .extract import clean_text
 from .ingest import products_of
 
 _ASCII_INT = re.compile(r"^-?[0-9]+$")
@@ -189,9 +190,9 @@ def product_shape(
     entries = _entries_by_id(product)
     shape: dict[str, Any] = {
         "id": pid,
-        "brand": product.get("brandName"),
-        "model": product.get("modelName"),
-        "group": product.get("_groupName"),
+        "brand": clean_text(product.get("brandName")),
+        "model": clean_text(product.get("modelName")),
+        "group": clean_text(product.get("_groupName")),
         "rank": ranks.get(pid),
         "price": product.get("price"),
         "overall_score": product.get("overallDisplayScore"),

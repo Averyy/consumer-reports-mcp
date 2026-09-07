@@ -760,3 +760,33 @@ def test_category_token_grammar_is_ascii_and_bounded():
     assert _CID.match("1234") and _CID.match("1234567")
     for junk in ("c12", "123", "12345678", "²", "c²", "①", "9" * 20, "1" * 5000, "c 37162"):
         assert _CID.match(junk) is None, junk[:10]
+
+
+def test_search_products_matches_and_serves_decoded_names(cache, anon_env, c37162):
+    """CR ships names entity-encoded (`Nitro V 16&quot;`, 157 of 3,348 cached names carried
+    one). They are decoded at ingest, and decoded again on read for rows written before that —
+    so a decoded query finds them and no hit carries a raw entity. A one-character needle
+    matches nothing: `"x"` substring-matched 25 rows through `XE`, `FLEX` and `X0LW`."""
+    import copy
+
+    env = copy.deepcopy(anon_env)
+    p = env["filter_instance"]["data"]["500001"]
+    p["modelName"], p["brandName"] = "Nitro V 16&quot; Laptop", "Black &amp; Decker"
+    cache.write_category(env, tier="anonymous", scored=False, fetched_at=days(1))
+    (hit,) = cache.search_products('16" laptop')
+    assert hit["id"] == 500001
+    assert hit["model"] == 'Nitro V 16" Laptop' and hit["brand"] == "Black & Decker"
+    assert cache.search_products("black & decker")[0]["id"] == 500001
+    assert cache.search_products("&quot;") == []  # the raw entity is not the name
+    # a row written before names were decoded is decoded on read
+    with cache._connect() as conn:
+        conn.execute(
+            "UPDATE product_index SET model_name=?, brand_name=? WHERE product_id=500001",
+            ("Swift 14.5&quot; Touch", "A &amp; B"),
+        )
+    (old,) = cache.search_products('14.5"')
+    assert old["model"] == 'Swift 14.5" Touch' and old["brand"] == "A & B"
+    # the needle minimum
+    assert cache.search_products("x") == [] and cache.search_products(" a ") == []
+    assert cache.search_products("a ") == []  # stripped to one character
+    assert cache.search_products("14") and cache_mod.PRODUCT_NEEDLE_MIN == 2

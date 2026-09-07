@@ -271,3 +271,18 @@ def test_a_product_lacking_a_requested_attribute_projects_a_complete_null_record
     assert rec["id"] == 6918 and rec["value"] is None and rec["description"] is None
     E.Attribute(**rec)  # the envelope accepts it
     E.ProductSummary(**s)
+
+
+def test_product_names_and_group_are_decoded(env):
+    """`brandName`/`modelName`/`_groupName` arrive entity-encoded from CR's JSON and used to be
+    served raw — `Aspire 14&quot; AI` to the caller."""
+    import copy
+
+    defs = build_definitions(env)
+    ranks = rank_table(env["filter_instance"])
+    p = copy.deepcopy(env["filter_instance"]["data"]["500001"])
+    p["modelName"], p["brandName"] = "Aspire 14&quot; AI  Copilot+", "Black &amp; Decker"
+    p["_groupName"] = "30 &ndash; 32 Inch"
+    s = product_shape(p, "summary", env, defs, ranks)
+    assert s["model"] == 'Aspire 14" AI Copilot+' and s["brand"] == "Black & Decker"
+    assert s["group"] == "30 – 32 Inch"

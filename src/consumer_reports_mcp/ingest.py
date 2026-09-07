@@ -11,6 +11,7 @@ from typing import Any
 
 from .config import is_login_url
 from .extract import (
+    clean_text,
     extract_filter_instance,
     extract_ratings_wrapper,
     filter_instance_is_complete,
@@ -343,5 +344,5 @@ def product_index_rows(envelope: dict) -> list[tuple[int, int, str | None, str |
         pid = _int(p.get("id"))
         if pid is None:
             continue
-        rows.append((pid, cid, p.get("brandName"), p.get("modelName")))
+        rows.append((pid, cid, clean_text(p.get("brandName")), clean_text(p.get("modelName"))))
     return rows
