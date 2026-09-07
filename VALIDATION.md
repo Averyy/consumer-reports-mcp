@@ -67,6 +67,50 @@ Each is a question a member would ask, and the tool chain an assistant would run
 9. **Discovery** — `cr_categories()` lists 300+ categories with both sources recorded, and
    `cr_categories(family=...)` scopes to a family.
 
+## Running the same checks through an agent (Claude Desktop / Claude Code)
+
+The script exercises the Python API. To exercise the MCP surface itself — the tool schemas,
+the descriptions, an assistant's reading of the envelopes — paste the block below into a
+conversation whose MCP server has been restarted since the last sign-in. The agent runs the
+tools; you read its report against the expected column.
+
+```
+Run a validation pass over the consumer-reports MCP tools. For each step call the tool,
+then report: the tool called, `session`, `auth_state` (if present), `scores_available`,
+the first two `warnings`, and whether the expectation held. Do not call cr_sign_in.
+
+1. cr_auth_status()                          → session active or unverified, expiry_basis measured, days_left_max > 300
+2. cr_search("french door refrigerator")      → categories[0].id == "c37162", match exact
+3. cr_ratings("c37162", price_max=2500, recommended=true)
+                                              → auth_state member, scores_available.overall_score available,
+                                                every product has a numeric overall_score, no data.notice
+4. cr_product(<first product id from step 3>, include_descriptions=true)
+                                              → dont_buy present, rank present, attributes with descriptions
+5. cr_filters("c37162")                       → a numeric filter collapsed to {min, max}
+6. cr_ratings("c28687")                       → rows served (this id is not in CR's A-Z index)
+7. cr_reliability("c28687")                   → brands listed, auth_state "anonymous", no session key
+8. cr_search("washing machines")              → "c28739" among the category hits
+9. cr_ratings("c28739", attributes=["Noise"], limit=5)
+                                              → projected_attributes on every row, no error
+10. cr_ratings("c28700", group_mode="flat", limit=200) then offset=200
+                                              → 200 + 103 rows, total 303, no overlap
+11. cr_car_search("Toyota RAV4")              → hits with model_year_id; no auth_state key on cars
+12. cr_car(<newest RAV4 id>)                  → scores_available values only available/absent
+13. cr_cars(make="toyota", year=2025, detail="standard", limit=3)
+                                              → ≤3 rows, states is a list
+14. cr_ratings("c999999999")                  → error.code unknown_category, auth_state null
+15. cr_ratings("c200369")                     → unknown_category whose candidates name c37162 and the group
+16. cr_cars(make="honda", year=1990)          → invalid_filter_value with a {min, max} in candidates
+17. cr_categories()                           → total ≥ 300, no sitemap_pass_pending warning
+
+Finish with a table of step, tool, pass/fail, and the one field that decided it.
+```
+
+Anonymous variant: the same block on a server started with no `session.json` (or
+`CR_SESSION_COOKIE` unset). Expect `auth_state: anonymous`, `overall_score` null on every
+product, `scores_available.overall_score: unavailable`, and a `data.notice` that names the
+paywall without telling the agent to call `cr_sign_in`.
+
 ## When a check fails
 
 - `auth_state: anonymous` on a member run with `session: expired` → the cookie lapsed
