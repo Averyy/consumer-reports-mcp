@@ -50,7 +50,7 @@ AUTH_STATE_DESCRIPTION = (
     "credential's health."
 )
 
-# The warnings vocabulary (SPEC §7 *Response envelope*, CLAUDE.md *Warnings vocabulary*) — the
+# The warnings vocabulary (SPEC §7 *Response envelope*, *Warnings vocabulary*) — the
 # one enumeration that exists in code. `ToolError.code` is a closed Literal; `warnings[]` was a
 # bare `list[str]` with every token spelled at its emission site, so a typo, a stray parameter
 # name or a token nobody documented all shipped as "machine-readable". Every envelope's

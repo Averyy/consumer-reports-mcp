@@ -1022,6 +1022,7 @@ def test_wafer_pin_is_the_measured_range_in_pyproject_and_both_docs():
     spelled = f"`wafer-py{WAFER_MEASURED}`"
     for doc in ("CLAUDE.md", "SPEC.md"):
         assert spelled in (ROOT / doc).read_text(encoding="utf-8"), f"{spelled} not in {doc}"
+    # CLAUDE.md carries the pin as a one-line rule; SPEC §9 carries the measurement behind it
 
 
 def test_installed_wafer_is_inside_the_measured_range():

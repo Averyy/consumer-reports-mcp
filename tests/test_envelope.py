@@ -332,19 +332,18 @@ def test_is_known_warning_grammar():
 
 
 def test_warning_registry_matches_the_documented_vocabulary():
-    """The registry is the code's enumeration; SPEC §7 and CLAUDE.md are the prose ones. Each
-    token in code is documented in both, and each token the SPEC's vocabulary table lists is
-    registered — so the three cannot drift apart silently in either direction."""
+    """The registry is the code's enumeration; SPEC §7 is the prose one. Each token in code is
+    documented there, and each token the SPEC's vocabulary table lists is registered — so the
+    two cannot drift apart silently in either direction. (CLAUDE.md holds rules, not the
+    vocabulary.)"""
     import re
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     spec = (root / "SPEC.md").read_text(encoding="utf-8")
-    claude = (root / "CLAUDE.md").read_text(encoding="utf-8")
     registered = E.WARNING_TOKENS | E.WARNING_PREFIXES
     for token in registered:
         assert token in spec, f"{token} is not in SPEC.md"
-        assert token in claude, f"{token} is not in CLAUDE.md"
     # the SPEC's vocabulary table: every `token` in its first column is a registered token or
     # prefix (a prefixed entry is written `prefix:<detail>`)
     table = spec.split("### Warnings vocabulary", 1)[1].split("\n###", 1)[0]
