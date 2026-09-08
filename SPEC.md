@@ -649,17 +649,22 @@ Measured against a live member session (`RECON.md` §5). The design-relevant con
 - **`hash` is the durable credential.** 365-day expiry, and on its own it fully restores the
   session — first request returns `data-subscriber="true"` and 172/172 scores, re-minting every
   other member cookie including a fresh `userLicenses`.
-- **`userLicenses` is sufficient but NOT necessary**, and it is short-lived: session-scoped and
-  rotated on each re-mint. An earlier draft called it "necessary and sufficient"; the necessity
-  half was untested and is false (`RECON.md` §5).
+- **`userLicenses` is sufficient but NOT necessary**, and it is short-lived: rotated on each
+  re-mint, and dead ~24 h after the `t` stamp it carries. An earlier draft called it "necessary
+  and sufficient"; the necessity half was untested and is false (`RECON.md` §5).
+- **A LAPSED `userLicenses` vetoes the `hash` re-mint** (`RECON.md` §5, measured 2026-09-08).
+  Past its ~24 h window it is not inert: CR stops following the durable cookie through
+  `secure.` and serves the ordinary anonymous page, so the session reads `session_expired` on a
+  credential with a year left. This is the one rule in this section that was learned by
+  shipping its opposite — see *the store never holds both* below.
 - **Re-minting works over plain HTTP, with no JavaScript** (`RECON.md` §5). A raw GET holding
   only `hash` recovers full member access on its first request. This is the wafer case exactly,
   so the 365-day durability reaches our client rather than being a browser-only property.
-- **So the capture stores `hash` and `userLicenses`, and persists rotations.** `hash` is what
-  makes a pasted session survive; `userLicenses` is what makes the very next request work
-  without a round trip. Pinning the pasted `userLicenses` and ignoring `Set-Cookie` updates
-  would throw away the renewal that keeps the session alive — wafer's cookie jar is the
-  mechanism, and keeping it is required, not optional.
+- **So the capture stores `hash`, and `userLicenses` only when it stands alone.** `hash` is
+  what makes a session survive; a stored `userLicenses` bought one saved redirect and cost the
+  session a day later. Rotations still accumulate in wafer's jar for the life of the process —
+  that renewal is the mechanism and keeping it is not optional — they simply stop being written
+  to disk. See *the store never holds both*.
 - **`userToken`'s 1-day expiry is not a constraint** — it is regenerated from `hash` during
   ordinary browsing, which is why members are not asked to log in daily.
 - **The cookies we need are not HttpOnly.** An earlier draft argued "Copy as cURL" was
@@ -695,6 +700,24 @@ viable: a static string holding `hash` keeps working for the credential's full y
 nothing the server would need to write back ever changes. Rotations of `userLicenses` are held
 in memory for the process lifetime and simply re-minted on the next cold start.
 
+**The store never holds both cookies — `durable_only`.** `userLicenses` is seeded and persisted
+**only when no `hash` is stored**; beside a `hash` it is dropped on every path — loaded, pasted,
+saved, or written back from the jar. The rule lives in one function in `credentials.py`
+(BOUNDARY 4) and is applied by all four, because a store that refused to *send* it while still
+*writing* it back would put the lapsed token in front of the next cold start exactly as before.
+
+The reasoning is arithmetic, not caution. A stored `userLicenses` is written back mid-process
+and read only by the NEXT process, so it is older than the session that sends it *by
+construction*; it lapses at ~24 h; and past that it vetoes the re-mint (`RECON.md` §5). Against
+that it saves exactly one redirect on the first request of a cold start and nothing after
+(`RECON.md` §10a A3). One hop, weighed against losing the session every day the server is
+restarted more than a day after it last ran — which for a desktop MCP server is most days.
+
+Alone, `userLicenses` is the entire credential (a paste or an env var may carry only that) and
+is kept and rotated as before. A `session.json` written before this rule self-heals when read:
+the dead token is dropped in memory, and the file is rewritten without it at the next sign-in —
+`load()` never writes.
+
 **The store of record is `session.json`; wafer's jar is a working copy.** On startup the jar is
 seeded from `session.json` (or `CR_SESSION_COOKIE`); rotations accumulate in the jar during the
 run and are flushed back to `session.json` only for cookies that came from there — never for the
@@ -705,8 +728,10 @@ discards the jar, so a fresh paste always wins over stale rotations.
 
 `RECON.md` §5 was measured through Playwright, which proves what **CR** does but not what **our
 client** does. **Spike A has since exercised this path end to end through wafer 0.4.9**
-(`RECON.md` §10a, §10i): `hash` alone re-mints a full member session, a stale `userLicenses`
-alongside it still authenticates, and nothing member-identifying reaches the cache. What follows
+(`RECON.md` §10a, §10i): `hash` alone re-mints a full member session, a *superseded but not yet
+lapsed* `userLicenses` alongside it still authenticates — a **lapsed** one does not, and that
+distinction cost a session a day for two captures before it was measured (`RECON.md` §5) — and
+nothing member-identifying reaches the cache. What follows
 is therefore measured, not inferred — but the reasoning is kept because each rule exists to
 prevent a specific failure that is still reachable.
 

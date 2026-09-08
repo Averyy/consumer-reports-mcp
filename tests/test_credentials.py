@@ -90,11 +90,12 @@ def test_file_source_loads_schema(store_path: Path):
     s.save({"hash": HASH, "userLicenses": LICENSES, "userToken": "dropped"})
     data = json.loads(store_path.read_text())
     assert data["schema_version"] == 2
-    assert set(data["cookies"]) == {"hash", "userLicenses"}
+    # `userToken` is not ours to keep, and `userLicenses` is dropped beside a `hash`
+    assert set(data["cookies"]) == {"hash"}
     assert data["captured_at"].endswith("Z")
     assert data["expires_at"] is None  # not measured: the key is there, and null
     fresh = CredentialStore(store_path, env={})
-    assert fresh.load() == {"hash": HASH, "userLicenses": LICENSES}
+    assert fresh.load() == {"hash": HASH}
     assert fresh.source == "file" and fresh.expires_at is None
 
 
@@ -122,12 +123,13 @@ def test_a_measured_expiry_is_stored_used_and_survives_a_rotation(store_path: Pa
     fresh = CredentialStore(store_path, env={})
     fresh.load()
     assert fresh.expires_at == expires and fresh.status()["remaining_days_max"] == 200
-    assert fresh.record_rotation("userLicenses", "new") is True
-    assert json.loads(store_path.read_text())["expires_at"] == expires
-    # only the durable cookie has a measured expiry to report
+    # only the durable cookie has a measured expiry to report — and a rotation write, which
+    # only a `userLicenses`-only store can now take, carries `expires_at` through unchanged
     lic = CredentialStore(store_path.parent / "lic.json", env={})
     lic.save({"userLicenses": "x"}, expires_at=expires)
     assert lic.status()["expiry_basis"] is None and lic.status()["remaining_days_max"] is None
+    assert lic.record_rotation("userLicenses", "new") is True
+    assert json.loads((store_path.parent / "lic.json").read_text())["expires_at"] == expires
     with pytest.raises(ValueError):
         CredentialStore(store_path.parent / "bad.json", env={}).save(
             {"hash": HASH}, expires_at="next year"
@@ -162,14 +164,15 @@ def test_file_mode_0600(store_path: Path):
 
 
 def test_rotation_writes_back_only_for_file_source(store_path: Path):
+    # a `userLicenses`-only store is the only one a rotation can still persist to
     file_store = CredentialStore(store_path, env={})
-    file_store.save({"hash": HASH, "userLicenses": "old"})
+    file_store.save({"userLicenses": "old"})
     assert file_store.record_rotation("userLicenses", "new") is True
     assert json.loads(store_path.read_text())["cookies"]["userLicenses"] == "new"
     assert file_store.record_rotation("userLicenses", "new") is False  # unchanged → no write
 
     before = store_path.read_text()
-    env = {"CR_SESSION_COOKIE": f"hash={HASH}; userLicenses=x"}
+    env = {"CR_SESSION_COOKIE": "userLicenses=x"}
     env_store = CredentialStore(store_path, env=env)
     env_store.load()
     assert env_store.record_rotation("userLicenses", "rotated") is False
@@ -178,10 +181,42 @@ def test_rotation_writes_back_only_for_file_source(store_path: Path):
 
 def test_rotation_not_written_when_rejected(store_path: Path):
     s = CredentialStore(store_path, env={})
-    s.save({"hash": HASH, "userLicenses": "old"})
+    s.save({"userLicenses": "old"})
     s.rejected = True
     assert s.record_rotation("userLicenses", "new") is False
     assert json.loads(store_path.read_text())["cookies"]["userLicenses"] == "old"
+
+
+def test_a_stored_userlicenses_never_travels_beside_a_hash(store_path: Path):
+    """RECON §5: a lapsed `userLicenses` SUPPRESSES the `hash` re-mint — CR serves the ordinary
+    anonymous page instead of logging the durable credential back in, and the session reads as
+    expired while the `hash` is still good for its year. A stored copy is always older than the
+    process that would send it, so it is dropped on every path: seeded, saved, or written back.
+    Seeding and persistence have to agree, or the next write puts it straight back."""
+    s = CredentialStore(store_path, env={})
+    s.save({"hash": HASH, "userLicenses": LICENSES})
+    assert s.load() == {"hash": HASH}
+    assert json.loads(store_path.read_text())["cookies"] == {"hash": HASH}
+    assert s.set_cookie_strings() == [f"hash={HASH}; Domain=.consumerreports.org; Path=/; Secure"]
+    # the write side: a rotation off the jar is held in memory, never persisted, beside a hash
+    assert s.record_rotation("userLicenses", "fresh") is False
+    assert json.loads(store_path.read_text())["cookies"] == {"hash": HASH}
+    # the env var carries the same hazard and gets the same rule
+    env_store = CredentialStore(
+        store_path, env={"CR_SESSION_COOKIE": f"hash={HASH}; userLicenses=L"}
+    )
+    assert env_store.load() == {"hash": HASH}
+    # a file written BEFORE the rule self-heals on read, without a write
+    store_path.write_text(
+        json.dumps({"schema_version": 2, "cookies": {"hash": HASH, "userLicenses": LICENSES}})
+    )
+    migrated = CredentialStore(store_path, env={})
+    assert migrated.load() == {"hash": HASH}
+    assert migrated.status()["userLicenses_present"] is False
+    # alone, it is the whole credential and is kept
+    solo = CredentialStore(store_path.parent / "solo.json", env={})
+    solo.save({"userLicenses": LICENSES})
+    assert solo.load() == {"userLicenses": LICENSES}
 
 
 def test_rotation_ignores_unknown_names_and_none(store_path: Path):
@@ -236,10 +271,12 @@ def test_status_for_env_source(store_path: Path):
 
 
 def test_set_cookie_strings_carry_domain_path_secure(store_path: Path):
-    s = CredentialStore(store_path, env={"CR_SESSION_COOKIE": f"hash={HASH}; userLicenses=L=="})
-    strings = s.set_cookie_strings()
-    assert f"hash={HASH}; Domain=.consumerreports.org; Path=/; Secure" in strings
-    assert "userLicenses=L==; Domain=.consumerreports.org; Path=/; Secure" in strings
+    s = CredentialStore(store_path, env={"CR_SESSION_COOKIE": f"hash={HASH}"})
+    assert s.set_cookie_strings() == [f"hash={HASH}; Domain=.consumerreports.org; Path=/; Secure"]
+    lic = CredentialStore(store_path, env={"CR_SESSION_COOKIE": "userLicenses=L=="})
+    assert lic.set_cookie_strings() == [
+        "userLicenses=L==; Domain=.consumerreports.org; Path=/; Secure"
+    ]
 
 
 def test_parse_value_with_equals_and_ansi_c_quoting():
@@ -248,7 +285,7 @@ def test_parse_value_with_equals_and_ansi_c_quoting():
 
 
 def test_rotation_before_load_works_and_keeps_capture_date(store_path: Path):
-    CredentialStore(store_path, env={}).save({"hash": HASH, "userLicenses": "old"})
+    CredentialStore(store_path, env={}).save({"userLicenses": "old"})
     captured = json.loads(store_path.read_text())["captured_at"]
     s = CredentialStore(store_path, env={})  # not loaded yet
     assert s.record_rotation("userLicenses", "new") is True
@@ -322,7 +359,7 @@ def test_no_cookie_value_in_repr_or_logs(store_path: Path, caplog):
     assert HASH not in text and LICENSES not in text
     assert HASH not in caplog.text and LICENSES not in caplog.text
     status = s.status()
-    assert status["hash_present"] is True and status["userLicenses_present"] is True
+    assert status["hash_present"] is True and status["userLicenses_present"] is False
     assert status["configured_tier"] == "member" and status["source"] == "file"
     assert status["age_days"] is not None and status["age_days"] < 1
 

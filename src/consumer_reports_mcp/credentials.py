@@ -9,8 +9,12 @@ off the browser's jar — and only then. A paste carries no attributes, so that 
 and the status falls back to `captured_at + DURABLE_COOKIE_DAYS`, an assumed upper bound. The
 two are told apart by `expiry_basis` everywhere the countdown is reported; before this the
 countdown was arithmetic on our own constant and would have read "364 days left" on a cookie
-that CR had already stopped honouring (a capture of 2026-09-05 died within a day, and nothing
-stored could say whether it had ever been durable).
+that CR had already stopped honouring (a capture of 2026-09-05 stopped authenticating within a
+day, and nothing stored could say whether it had ever been durable).
+
+That capture had NOT stopped being durable: `durable_only` below is the answer, measured
+2026-09-08. The countdown was right and the credential was fine; a stored `userLicenses` was
+vetoing it. Kept as written because the expiry it records is what proved the `hash` innocent.
 """
 
 from __future__ import annotations
@@ -31,6 +35,15 @@ SESSION_FILE_NAME = "session.json"
 ENV_VAR = "CR_SESSION_COOKIE"
 COOKIE_NAMES = ("hash", "userLicenses")
 DURABLE_COOKIE = "hash"
+# CR's entitlement token: signed, and stamped with its own issue time (the `t` field). It lapses
+# about 24 h after that stamp, and a LAPSED one does not merely fail to help — it SUPPRESSES the
+# `hash` re-mint, and CR answers with the ordinary anonymous page (RECON §5, measured
+# 2026-09-08: the same credential probed `session_expired` with a day-old `userLicenses`
+# alongside it and `member` with `hash` alone, twice, either order). A stored copy is written
+# back mid-process and only ever read by the NEXT process, so it is older than the session that
+# would use it by construction: it can save exactly one redirect (RECON §10a A3 — the re-mint is
+# once per session, nothing after) and it can cost the whole session. Hence `durable_only`.
+DERIVED_COOKIE = "userLicenses"
 # RECON §5: the "remember me" mint gives `hash` a fixed 365-day expiry, not a sliding window.
 # This is the ASSUMED lifetime, used only when no expiry was measured (the paste path).
 DURABLE_COOKIE_DAYS = 365
@@ -171,6 +184,22 @@ def _split_cookie_string(s: str) -> dict[str, str]:
     return out
 
 
+def durable_only(cookies: Mapping[str, str]) -> dict[str, str]:
+    """SPEC §6: drop `userLicenses` when `hash` is present; keep it when it stands alone.
+
+    The single home of that rule, applied by every path that seeds or stores a credential
+    (`load`, `preload`, `save`, `record_rotation`), because seeding and persistence enforcing it
+    differently is exactly how the lapsed token gets back in front of a live `hash`: a store that
+    refused to send it but still wrote it back would poison the next cold start just the same.
+
+    A `userLicenses` with no `hash` is the whole credential and is kept — a paste or an env var
+    can legitimately carry only that, and dropping it would sign the user out."""
+    kept = dict(cookies)
+    if DURABLE_COOKIE in kept:
+        kept.pop(DERIVED_COOKIE, None)
+    return kept
+
+
 def parse_cookie_input(text: str) -> dict[str, str]:
     """Accept a bare `hash`, a `Cookie:` header, a `name=value; …` string, or a cURL paste.
 
@@ -263,7 +292,7 @@ class CredentialStore:
         raw_env = self._env.get(ENV_VAR)
         if env_value_set(raw_env):
             parsed = parse_cookie_input(raw_env)
-            self._cookies = parsed
+            self._cookies = durable_only(parsed)
             self.source = "env"
             self.captured_at = None
             self.expires_at = None
@@ -274,9 +303,13 @@ class CredentialStore:
         if data:
             raw = data.get("cookies")
             if isinstance(raw, dict):
-                self._cookies = {
-                    k: v for k, v in raw.items() if k in COOKIE_NAMES and isinstance(v, str) and v
-                }
+                # `durable_only` here is also the migration: a file written before this rule
+                # carries a `userLicenses` that is dead by now, and it is dropped on read
+                # rather than sent. `load` never writes, so the dead value stays on disk until
+                # the next `save` (a sign-in) rewrites the file without it.
+                self._cookies = durable_only(
+                    {k: v for k, v in raw.items() if k in COOKIE_NAMES and isinstance(v, str) and v}
+                )
             else:
                 self._cookies = {}
                 self.load_warning = f"{self.path.name} is malformed and was ignored"
@@ -301,7 +334,9 @@ class CredentialStore:
     def preload(self, cookies: Mapping[str, str]) -> None:
         """Hold pasted cookies in MEMORY for a validation fetch — source `memory` never writes
         back and nothing reaches the file unless `save()` is called (SPEC §6)."""
-        self._cookies = {k: v for k, v in cookies.items() if k in COOKIE_NAMES and v}
+        # the probe must send what the real transport would send, or a pre-flight check can
+        # pass on a jar the process will never actually use (RECON §5)
+        self._cookies = durable_only({k: v for k, v in cookies.items() if k in COOKIE_NAMES and v})
         self.source = "memory"
         self.captured_at = None
         self.expires_at = None
@@ -356,7 +391,7 @@ class CredentialStore:
         """Store the credential. `expires_at` is the durable cookie's OWN expiry as the browser
         reported it (`expiry_from_posix`), when the caller measured one; a paste has none, and
         the status then falls back to the assumed `DURABLE_COOKIE_DAYS` bound and says so."""
-        kept = {k: v for k, v in cookies.items() if k in COOKIE_NAMES and v}
+        kept = durable_only({k: v for k, v in cookies.items() if k in COOKIE_NAMES and v})
         if not kept:
             raise ValueError("nothing to save: no hash or userLicenses cookie present")
         if expires_at is not None and _parse_iso(expires_at) is None:
@@ -419,6 +454,12 @@ class CredentialStore:
         self._ensure_loaded()
         if self.source != "file":
             return False
+        if name == DERIVED_COOKIE and DURABLE_COOKIE in self._cookies:
+            # `durable_only` on the write side. Persisting this rotation is what put a lapsed
+            # entitlement token in front of a live `hash` on every cold start (RECON §5); the
+            # rotation still lives in wafer's jar for the rest of the process, which is the only
+            # place it was ever useful.
+            return False
         if self._cookies.get(name) == value:
             return False
         self._cookies[name] = value
@@ -446,7 +487,8 @@ class CredentialStore:
         #             carries no attributes, so this is the best a paste can say. Capture can
         #             post-date the mint by any amount, and a cookie minted WITHOUT remember-me
         #             is not durable at all, so this can overstate the life left by up to a
-        #             year — which is what made the 2026-09-05 capture unexplainable.
+        #             year — which is what made the 2026-09-05 capture unexplainable at the
+        #             time. It was not the cookie: see `durable_only`.
         remaining_days: float | None = None
         basis: str | None = None
         expires = _parse_iso(self.expires_at) if DURABLE_COOKIE in cookies else None

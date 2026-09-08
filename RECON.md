@@ -265,7 +265,37 @@ which re-renders server-side, checked. So a failed submit does NOT lose the tick
 re-asserts it on every poll anyway, which covers the user un-ticking it and CR changing the
 default.
 
-**A capture of 2026-09-05 stopped working after about a day, and why is unknowable.** The
+**ANSWERED 2026-09-08: a lapsed `userLicenses` suppresses the `hash` re-mint.** The captures
+did not die — *we killed them*, by sending a stored entitlement token alongside the durable
+cookie. Measured on the 2026-09-07 credential at ~31 h, one request each, through the transport:
+
+| Jar | Verdict |
+|---|---|
+| `hash` + stored `userLicenses` | `session_expired` — anonymous body, `data-subscriber="false"` |
+| **`hash` alone** | **`member`** — 8/8 scored |
+| `hash` + stored `userLicenses`, repeated | `session_expired` |
+
+Order-independent, same credential, same minute; dropping `userLicenses` from `session.json`
+restored member access with no new sign-in. That `hash` carried a browser-measured expiry of
+**2027-09-07** and was still good — so the "remember-me did not take / session-only `hash`"
+hypothesis below is **falsified**, and the countdown was not lying after all.
+
+The token names its own clock. `userLicenses` is `d`(gzipped licenses)`&t=`(ms issue time)`&s=`
+(40-char signature); the 2026-09-07 copy carried `t = 2026-09-07T14:48:35Z`, the moment our
+write-back stored it. Re-read against `t` rather than against capture, the 09-05 timeline below
+lands exactly: written back 21:34:06Z, last member fetch 2026-09-06T21:33:53Z — **13 seconds
+under 24 h after the token was minted**, not "24 h 02 min after capture". So `userLicenses`
+lapses ~24 h after its own `t`, and once lapsed CR serves the anonymous page instead of
+following the `hash` through the re-mint. It is not inert: it is a veto.
+
+Why this hit every day and not once: the stored copy is written back mid-process and only ever
+read by the NEXT process, so it is always older than the session that sends it. The fix is
+`SPEC.md` §6's `durable_only` — `userLicenses` is seeded and persisted only when it is the sole
+credential — at the cost of one redirect per cold start (§10a A3: the re-mint is once per
+session, nothing after).
+
+**A capture of 2026-09-05 stopped working after about a day** — *superseded by the entry above;
+kept because the reasoning shows what the missing measurement cost.* The
 browser flow at the time returned only the cookie's value; the `expires` Playwright reports
 (POSIX seconds, `-1` for a session cookie) was discarded, `session.json` stored only
 `captured_at`, and the status counted down from the 365-day constant — it said 364 the day the
@@ -294,15 +324,27 @@ What differs from here on is that the per-`hash` log line and the stored `expire
 name it. (That log line was itself dropped on the 09-07 run: the CLI configured logging only
 for the validation step, after the browser had closed — fixed the same day.)
 
-**A lapsed `hash` is IGNORED, not rejected** (measured 2026-09-07 on that cookie, through the
-transport: `hash` + `userLicenses` in the jar): the category page comes back `200`, **no
-redirect at all** (`resp.history` empty — no re-mint hop through `secure.`), the ordinary
-anonymous body with `data-subscriber="false"`, and `hash` **still in the jar** afterwards. So
-the three credential states are now all measured and all differ: *absent* → the anonymous page
-(§5); *malformed* → redirect to `/ec/login?error`, no payload, cookie cleared (§10b); *lapsed*
-→ the anonymous page with the cookie left in place. The transport's classification is right for
-each: the lapsed case is `session_expired` (marker `false`, `hash` asserted in the jar), never
-`credential_rejected` and never `payload_missing`.
+**A `hash` behind a lapsed `userLicenses` is IGNORED, not rejected** (measured 2026-09-07,
+through the transport: `hash` + `userLicenses` in the jar): the category page comes back `200`,
+**no redirect at all** (`resp.history` empty — no re-mint hop through `secure.`), the ordinary
+anonymous body with `data-subscriber="false"`, and `hash` **still in the jar** afterwards.
+
+> **This experiment was originally titled "a lapsed `hash`", and that attribution was wrong.**
+> Both cookies in the jar were ~40 h old and only one of them was tested — the 2026-09-08 A/B
+> above shows the `userLicenses` alone accounts for every symptom, and that the `hash` beside
+> it may well have been live. **The `hash`-lapsed row is therefore UNMEASURED**: no genuinely
+> expired `hash` has ever been observed, because none has been allowed to age a year. Read the
+> signature below as "a vetoed re-mint", which is what it is known to be.
+
+So of the credential states, three are measured and differ: *absent* → the anonymous page (§5);
+*malformed* → redirect to `/ec/login?error`, no payload, cookie cleared (§10b); *vetoed by a
+lapsed `userLicenses`* → the anonymous page with the cookie left in place. The transport's
+classification is defensible for each — the vetoed case is `session_expired` (marker `false`,
+`hash` asserted in the jar), never `credential_rejected` and never `payload_missing` — but note
+what that verdict cost while the veto was reachable: it read `session_expired` on a credential
+with 363 days left and sent the user to sign in again. The classifier was reasoning correctly
+about a genuinely anonymous page; the page was our own doing. Removing the veto is what makes
+`session_expired` honest, which is why the fix is in the store and not in the classifier.
 
 ### Verified end to end
 
@@ -950,11 +992,18 @@ that `SPEC.md` §6 requires the client to persist is real and observable.
 **A3 — the re-mint is once per session.** A second request on the same session: `200`, **0
 redirects**, still `data-subscriber="true"`, 8/8 scored.
 
-**A4 — `hash` + a STALE `userLicenses` authenticates.** Injecting the original (now superseded)
-`userLicenses` alongside `hash`: `200`, no login redirect, `data-subscriber="true"` × 88, 8/8
-scored. **This closes the open question in §5**: CR does not reject a stale entitlement token when
-a valid `hash` accompanies it, so `auth` storing both cookies is safe and the cold-start path
-days after a paste works. Storing `hash` alone would also have worked, but is not required.
+**A4 — `hash` + a SUPERSEDED `userLicenses` authenticates.** Injecting the original (now
+superseded) `userLicenses` alongside `hash`: `200`, no login redirect, `data-subscriber="true"`
+× 88, 8/8 scored. CR does not reject a superseded entitlement token when a valid `hash`
+accompanies it.
+
+> **A4 tested SUPERSEDED, never LAPSED, and the conclusion it was given did not survive.** The
+> token here had been replaced minutes earlier by the re-mint in A2 — it was still inside its
+> ~24 h `t` window. It was read as "so `auth` storing both cookies is safe", which held for a
+> day and then took the session down every time (§5, measured 2026-09-08): past `t + ~24 h` the
+> same token vetoes the re-mint. A stored `userLicenses` is *always* the lapsed kind by the time
+> a cold start sends it, so what A4 licensed is precisely what §5 now forbids. A4's own reading
+> stands: **storing `hash` alone works**, which is what the store does now.
 
 **A6 — nothing member-identifying reaches the cache.**
 
@@ -1443,14 +1492,15 @@ Everything the spikes closed has moved to §10. What remains:
 
 **Needs a state we cannot manufacture**
 
-- ~~What a genuinely EXPIRED `hash` does.~~ **Answered 2026-09-07** (§5): the ordinary
-  anonymous page, no redirect, cookie left in the jar — `session_expired`. §10b's redirect is
-  the *malformed* case only.
-- **Why the 2026-09-05 capture died after about a day** (§5). It authenticated for at least
-  24 h 02 min, which fits a 24-hour server-side session. The expiry was not recorded at the
-  time and the cookie is dead, so this stays open. The 2026-09-07 capture through the same
-  window minted a 365-day `hash`, so the window is not the cause by itself; a repeat will now
-  be named by `expires_at`, the per-`hash` log line, or a `not_durable` refusal.
+- ~~Why the 2026-09-05 capture died after about a day.~~ **Answered 2026-09-08** (§5): it did
+  not die. A stored `userLicenses` lapses ~24 h after its own `t` stamp and then vetoes the
+  `hash` re-mint; the 09-07 credential probed `member` with `hash` alone at ~31 h and
+  `session_expired` with the token beside it, either order. Both "deaths" were ours.
+- **What a genuinely EXPIRED `hash` does** — REOPENED 2026-09-08, having been marked answered on
+  09-07. That experiment had a lapsed `userLicenses` in the same jar, and the lapsed token alone
+  produces the whole signature it recorded (§5), so the `hash` in it was never shown to be dead.
+  §10b's redirect remains the *malformed* case. Needs a `hash` allowed to reach its year — the
+  calendar item above, not a spike.
 - **What a wafer identity rotation does to a live member session.** §10c established that the
   jar loss seen in testing was CR clearing a rejected cookie, *not* rotation — so the rotation
   hazard itself is still un-observed. It stays mitigated by construction (`max_rotations=0`

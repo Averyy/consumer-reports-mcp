@@ -34,12 +34,14 @@ class Factory:
         return self.session
 
 
-def make_transport(tmp_path: Path, *, cookie: bool, env: dict | None = None):
+def make_transport(tmp_path: Path, *, cookie: bool, env: dict | None = None, licenses_only=False):
     # no politeness interval unless a test asks for one: the gate is real now, the session fake
     settings = Settings(env={"CR_MIN_REQUEST_INTERVAL_S": "0", **(env or {})}, home=tmp_path)
     store = CredentialStore(tmp_path / "session.json", env={})
     if cookie:
-        store.save({"hash": HASH, "userLicenses": "old-lic"})
+        # a `userLicenses` is only ever STORED when it stands alone (SPEC §6): beside a `hash`
+        # it is dropped, so `cookie=True` seeds the durable cookie and nothing else
+        store.save({"userLicenses": "old-lic"} if licenses_only else {"hash": HASH})
     health = SessionState(configured=store.configured)
     factory = Factory()
     t = Transport(settings, store, health, session_factory=factory)
@@ -75,8 +77,7 @@ async def test_cookie_injected_with_domain_path_secure(tmp_path):
     t, factory, _, _ = make_transport(tmp_path, cookie=True)
     sess = await t.session()
     raws = [raw for raw, _ in sess.add_cookie_calls]
-    assert f"hash={HASH}; Domain=.consumerreports.org; Path=/; Secure" in raws
-    assert "userLicenses=old-lic; Domain=.consumerreports.org; Path=/; Secure" in raws
+    assert raws == [f"hash={HASH}; Domain=.consumerreports.org; Path=/; Secure"]
     assert all(url == WWW + "/" for _, url in sess.add_cookie_calls)
     assert sess.get_cookie("hash", "https://secure.consumerreports.org/ec/login") == HASH
 
@@ -224,7 +225,7 @@ async def test_login_final_url_sets_rejected_and_retries_once_without_reseed(tmp
     assert len(sess.requests) == 2
     assert store.rejected is True and health.health is SessionHealth.EXPIRED
     seeds = [raw for raw, _ in sess.add_cookie_calls if "Max-Age=0" not in raw]
-    assert len(seeds) == 2 and sess.get_cookie("hash", WWW + "/") is None  # construction only
+    assert len(seeds) == 1 and sess.get_cookie("hash", WWW + "/") is None  # construction only
     # and the credential stays dropped for the rest of the process: no re-seed on the next call
     sess.push(
         FakeResponse(
@@ -284,7 +285,7 @@ async def test_car_page_logged_out_with_emptied_jar_is_identity_rotated(tmp_path
 
 
 async def test_cars_api_skips_login_check_and_rotation_writeback(tmp_path):
-    t, factory, store, _ = make_transport(tmp_path, cookie=True)
+    t, factory, store, _ = make_transport(tmp_path, cookie=True, licenses_only=True)
     sess = factory.session
     sess.push(
         FakeResponse(
@@ -389,7 +390,8 @@ async def test_reseed_before_request_when_hash_missing(tmp_path, c37162):
 
 
 async def test_userlicenses_rotation_recorded_from_jar_not_response(tmp_path, c37162):
-    t, factory, store, _ = make_transport(tmp_path, cookie=True)
+    # a `userLicenses`-only store is the only one that still persists a rotation (SPEC §6)
+    t, factory, store, _ = make_transport(tmp_path, cookie=True, licenses_only=True)
     sess = factory.session
     # the re-mint lands on a redirect hop: `cookies` (this response) is empty, the JAR has it
     sess.push(
@@ -406,6 +408,27 @@ async def test_userlicenses_rotation_recorded_from_jar_not_response(tmp_path, c3
     import json
 
     assert json.loads((tmp_path / "session.json").read_text())["cookies"]["userLicenses"] == "fresh"
+
+
+async def test_a_rotation_beside_a_hash_stays_in_the_jar_and_off_disk(tmp_path, c37162):
+    """The write-back that caused the daily "expired session": the rotation persisted here is
+    lapsed by the next cold start, and a lapsed `userLicenses` suppresses the `hash` re-mint
+    (RECON §5). It stays in wafer's jar for this process, which is where it was ever useful."""
+    import json
+
+    t, factory, store, _ = make_transport(tmp_path, cookie=True)
+    factory.session.push(
+        FakeResponse(
+            url=CAT_URL,
+            status_code=200,
+            content=make_category_page(c37162, subscriber="true"),
+            set_cookies={"userLicenses": "fresh"},
+        )
+    )
+    await t.fetch(CAT_URL)
+    assert factory.session.get_cookie("userLicenses", WWW + "/") == "fresh"  # the jar has it
+    assert "userLicenses" not in store.cookies
+    assert json.loads((tmp_path / "session.json").read_text())["cookies"] == {"hash": HASH}
 
 
 async def test_no_rotation_writeback_for_env_source(tmp_path, c37162):

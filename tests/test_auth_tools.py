@@ -269,7 +269,7 @@ async def test_a_dead_stored_cookie_is_renewed_without_force(tmp_path):
 
     out = await cr_sign_in(h.rt)  # no force
     assert out.data.status in STARTED and out.data.browser == "chrome", out.data
-    assert validate.seen == [{"hash": STORED, "userLicenses": "old"}]  # the STORED cookie
+    assert validate.seen == [{"hash": STORED}]  # the STORED cookie, without a stale token
     assert len(capture.calls) == 1  # …was rejected, so the window opened
     assert out.session == "expired" and h.rt.health.health is SessionHealth.EXPIRED
     st = await cr_auth_status(h.rt)
@@ -289,7 +289,7 @@ async def test_a_stored_cookie_cr_still_accepts_is_refused_after_the_check_not_b
     flow_for(h, capture=capture, validate=validate)
     out = await cr_sign_in(h.rt)
     assert out.data.status == "refused" and out.data.reason == "session_active"
-    assert validate.seen == [{"hash": STORED, "userLicenses": "old"}]
+    assert validate.seen == [{"hash": STORED}]
     assert capture.calls == []  # no window on a user who is signed in
     # the probe was a marker-bearing fetch with this credential: health moved, truthfully
     assert out.session == "active" and h.rt.health.health is SessionHealth.ACTIVE
