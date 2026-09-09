@@ -800,11 +800,26 @@ def test_command_line_on_windows_queries_the_process_command_line(monkeypatch):
     answer.update(stdout="", returncode=0)  # the script never does this; still not a match
     assert B._query_command_line(4242) == (None, B.STATUS_UNREADABLE)
 
+    # a cold Windows host can overrun the whole budget starting PowerShell and the WMI provider
+    # host (CI, windows-latest, 2026-09-09). The retry meets a warm provider, so ONE timeout is
+    # not an answer — and the thing it costs is the kill, i.e. an orphaned Chrome.
+    tries: list[int] = []
+
+    def slow_then_ready(argv, **kwargs):
+        tries.append(1)
+        if len(tries) == 1:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, chrome, "")
+
+    monkeypatch.setattr(B.subprocess, "run", slow_then_ready)
+    assert B._query_command_line(4242) == (chrome, B.STATUS_FOUND)
+    assert len(tries) == 2
+
     def slow(argv, **kwargs):
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
     monkeypatch.setattr(B.subprocess, "run", slow)
-    assert B._query_command_line(4242) == (None, "query_failed:timeout")
+    assert B._query_command_line(4242) == (None, "query_failed:timeout")  # twice over is
     monkeypatch.setattr(B.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError()))
     assert B._query_command_line(4242) == (None, "query_failed:OSError")
     assert B._command_line(4242) is None

@@ -369,19 +369,31 @@ def _query_command_line(pid: int) -> tuple[str | None, str]:
     kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    try:
-        out = subprocess.run(
-            _command_line_argv(pid),
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=COMMAND_LINE_TIMEOUT_S,
-            **kwargs,
-        )
-    except subprocess.TimeoutExpired:
-        return None, f"{QUERY_FAILED}timeout"
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, f"{QUERY_FAILED}{type(exc).__name__}"
+    # A timeout is retried once on Windows, and only a timeout. The first `Get-CimInstance` on a
+    # cold host starts PowerShell AND the WMI provider host before it can answer, and CI
+    # (windows-latest, 2026-09-09) overran even the raised 15 s budget doing it; the second
+    # attempt meets a warm provider and returns in well under a second. Repeating is safe — the
+    # query is read-only — and the thing it buys is the kill: "unknown means no kill", so a
+    # timeout here is not a slow answer but an orphaned Chrome left on the user's machine.
+    # Every other failure is reported on the first attempt, since none of them gets better.
+    attempts = 2 if sys.platform == "win32" else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            out = subprocess.run(
+                _command_line_argv(pid),
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=COMMAND_LINE_TIMEOUT_S,
+                **kwargs,
+            )
+            break
+        except subprocess.TimeoutExpired:
+            if attempt == attempts:
+                return None, f"{QUERY_FAILED}timeout"
+            log.debug("command-line query for pid %s timed out; retrying on a warm host", pid)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return None, f"{QUERY_FAILED}{type(exc).__name__}"
     if sys.platform == "win32":
         if out.returncode == _EXIT_GONE:
             return None, STATUS_GONE
