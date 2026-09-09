@@ -1,6 +1,6 @@
 [project]
 name = "consumer-reports-mcp"
-version = "0.3.0"
+version = "0.2.17"
 description = "MCP server exposing a Consumer Reports member's own subscription as structured ratings tools"
 readme = "README.md"
 license = "MIT"
