@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from . import lexical
 from .extract import clean_text
@@ -26,6 +26,21 @@ PRODUCT_NEEDLE_MIN = 2  # characters; see `search_products`
 USER_VERSION = 2  # 2: category_slug_alias — a published slug must keep resolving
 SOURCES = ("az", "sitemap", "payload")
 RANGE_KNOWN, RANGE_NONE, RANGE_NOT_FETCHED = "known", "none_published", "not_fetched"
+
+
+class ReliabilityUrl(NamedTuple):
+    """What the cache knows about a category's reliability page.
+
+    `status` is `known` / `none_published` / `not_fetched`; `seen_at` is when the category
+    payload that says so was fetched, so a caller answering from it can report honest
+    provenance without a second lookup (it is None when the answer came from the projected
+    `category_index` column, which carries no timestamp of its own)."""
+
+    url: str | None
+    status: str
+    seen_at: str | None
+
+
 WWW = "https://www.consumerreports.org"
 
 SCHEMA = """
@@ -1075,28 +1090,56 @@ class Cache:
         return json.loads(row["payload_json"])
 
     def reliability_url_from_cache(self, category_id: int) -> str | None:
-        """The real `reliabilityURL` for a category: projected into `category_index` at write
-        time from `args.cats[]`, else read from the category's own newest envelope. No scan."""
+        """The real `reliabilityURL` for a category, or None when none is known. Thin wrapper —
+        callers that must tell "CR publishes no survey" from "we have not looked" want
+        `reliability_url_status`."""
+        return self.reliability_url_status(category_id).url
+
+    def reliability_url_status(self, category_id: int) -> ReliabilityUrl:
+        """`(url, status)` with status `known` / `none_published` / `not_fetched` — the same
+        vocabulary as `category_index.score_range_status`.
+
+        CR states the answer in the category payload itself: `args.cats[]`'s entry for the id
+        carries `reliabilityURL` as a URL string when a survey exists and the **boolean `false`**
+        when none does. Measured over every category cached here: 27 string, 25 `false`, nothing
+        else — the field is bimodal, so `false` is CR's own "no survey published", not a gap.
+
+        Collapsing that into a bare None is what made `cr_reliability` guess a URL for a page CR
+        never published, spend a request on it, 404, and then tell the caller to run `cr_ratings`
+        so the real URL would be cached — advice that cannot work, because the payload they
+        already had is what says there is no URL (see SPEC §7). Projected into
+        `category_index.reliability_url` at write time, else read from the newest envelope."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT reliability_url FROM category_index WHERE category_id=?", (category_id,)
             ).fetchone()
             own = conn.execute(
-                "SELECT rowid FROM category_raw WHERE category_id=? "
+                "SELECT rowid, fetched_at FROM category_raw WHERE category_id=? "
                 "ORDER BY fetched_at DESC LIMIT 1",
                 (category_id,),
             ).fetchone()
+        seen = own["fetched_at"] if own else None
         if row and row["reliability_url"]:
-            return row["reliability_url"]
+            return ReliabilityUrl(row["reliability_url"], RANGE_KNOWN, None)
         if own:
             env = self.load_envelope(own["rowid"])
             args = (env.get("filter_instance") or {}).get("args") or {}
-            for c in args.get("cats") or []:
-                if isinstance(c, dict) and c.get("id") == category_id and c.get("reliabilityURL"):
-                    return _absolute(str(c["reliabilityURL"]))
+            entry = next(
+                (
+                    c
+                    for c in args.get("cats") or []
+                    if isinstance(c, dict) and c.get("id") == category_id
+                ),
+                None,
+            )
+            if entry is not None and entry.get("reliabilityURL"):
+                return ReliabilityUrl(_absolute(str(entry["reliabilityURL"])), RANGE_KNOWN, seen)
             if isinstance(args.get("reliabilityURL"), str) and args["reliabilityURL"]:
-                return _absolute(args["reliabilityURL"])
-        return None
+                return ReliabilityUrl(_absolute(args["reliabilityURL"]), RANGE_KNOWN, seen)
+            # the payload describes this id and names no survey: CR's answer, not our gap
+            if entry is not None and entry.get("reliabilityURL") is False:
+                return ReliabilityUrl(None, RANGE_NONE, seen)
+        return ReliabilityUrl(None, RANGE_NOT_FETCHED, None)
 
     # --- cars ------------------------------------------------------------------------
     def write_car_index(self, rows: Iterable[dict], now: datetime) -> int:

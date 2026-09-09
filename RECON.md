@@ -395,6 +395,27 @@ makes cold-cache category search possible. HTML entities need unescaping (`&amp;
 Each category exposes a `reliabilityURL` (in `args.cats`), e.g.
 `/appliances/refrigerators/french-door-refrigerator/reliability/c37162/` (2.4 MB).
 
+### 9a. `reliabilityURL` is bimodal, and `false` is CR's answer, not a gap
+
+*Measured 2026-09-09 over every category cached locally (52 with a payload on hand), reading
+each payload's own `args.cats[]` entry for its `args.cid`:*
+
+| `reliabilityURL` on the id's own entry | Categories | `HasReliabilityData` |
+|---|---|---|
+| a URL string | 27 | 1 |
+| the boolean **`false`** | 25 | 0 / absent |
+
+No third form, no null, no empty string. So the field is a **statement**: CR runs a brand survey
+on this category, or it does not. `false` is not a missing value to be worked around — it is the
+answer, and the only place the answer is available without fetching anything.
+
+Categories measured `false` include upright freezers (`c33041`), which is what surfaced this:
+`cr_reliability` treated "the payload says `false`" and "no payload cached" as the same unknown,
+constructed `/appliances/freezers/upright-freezers/reliability/c33041/`, and CR returned the
+404 it should. The filed report reasoned that the nested `freezers` franchise segment had
+confused a URL builder — a good hypothesis, and wrong: there is no page at any URL, because CR
+publishes no survey for the category. See `SPEC.md` §7 for the fix.
+
 **It does not contain `filterInstanceDATA`.** It carries `window.initStore` — 2,033,720 bytes,
 shaped `{data: {supercategory, category, categories[], models[], taxonomy}, env, seo}`.
 

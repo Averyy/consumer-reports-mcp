@@ -19,7 +19,7 @@ from typing import Any
 
 from . import envelope as E
 from . import ingest
-from .cache import Cache, Resolution, Selection, from_iso, is_stale, utcnow
+from .cache import RANGE_NONE, Cache, Resolution, Selection, from_iso, is_stale, utcnow
 from .config import AUTH_PROBE_CATEGORY, AUTH_PROBE_PATH, REFRESH_COOLDOWN_S, WWW, Settings
 from .credentials import ENV_VAR, CredentialStore, SessionState
 from .discovery import Discovery
@@ -81,11 +81,15 @@ class Served:
 class ReliabilityServed:
     payload: dict
     category_id: int
-    fetched_at: str
+    fetched_at: str | None
     cr_url: str | None
     from_cache: bool
     stale: bool
     warnings: list[str] = field(default_factory=list)
+    # False when CR publishes no survey for this category and said so in its own category
+    # payload (`reliabilityURL: false`). `payload` is then empty and must not be parsed: the
+    # answer is SPEC §7's structural no-data envelope, which is a success, not an error.
+    survey_published: bool = True
 
 
 class Repository:
@@ -471,8 +475,25 @@ class Repository:
         neg = self.negcache.get(("rel", cid), now)
         if neg is not None:
             return self._rel_fallback(cid, sel, neg[0], neg[1])
-        url = self.cache.reliability_url_from_cache(cid)
+        known = self.cache.reliability_url_status(cid)
+        url = known.url
         constructed = False
+        if known.status == RANGE_NONE:
+            # CR's own category payload says there is no survey page. Answering from it costs no
+            # request and is the honest answer; guessing a URL here is what produced a 404 and an
+            # error telling the caller to cache a URL that does not exist (SPEC §7).
+            # provenance is the CATEGORY payload that carried the answer — `seen_at`, not a
+            # tier-scoped selection: `reliabilityURL` sits in `args` and is identical in both
+            # tiers, so an anonymous row answers a member caller here without a downgrade
+            return ReliabilityServed(
+                payload={},
+                category_id=cid,
+                fetched_at=known.seen_at,
+                cr_url=None,
+                from_cache=True,
+                stale=is_stale(known.seen_at, ttl, now) if known.seen_at else False,
+                survey_published=False,
+            )
         if url is None:
             canonical = (res.row or {}).get("canonical_url")
             if canonical is None:

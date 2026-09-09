@@ -1672,6 +1672,20 @@ reliability payload has been pulled for any reason.
   are reliable", which is this project's core failure mode in miniature. When only one survey is
   missing the brands still ship, ranked by the survey that has data, with the absent side `null`
   per brand: dropping them would lose the half CR did publish.
+- **CR names the categories it surveys, and we must read it.** `args.cats[]`'s entry for the id
+  carries `reliabilityURL` as a URL string where a survey exists and the **boolean `false`**
+  where none does — bimodal over every category measured, 27 string / 25 `false` (`RECON.md`
+  §9a). So `cache.reliability_url_status` answers `known` / `none_published` / `not_fetched`,
+  and `none_published` takes the no-data envelope above **without a request**, with `cr_url:
+  null` (there is no page to name) and `fetched_at` from the category payload that said so.
+  Guessing is reserved for `not_fetched`, the only state where nothing is known.
+
+  This is a fix, not a refinement. Both states collapsed into one `None`, so `cr_reliability`
+  guessed `…/reliability/c33041/` for upright freezers, spent a request, took CR's correct 404,
+  and returned `fetch_failed`/`url_unresolved` advising the caller to *"run `cr_ratings` on the
+  category so the real URL is cached"* — which they had done, and which cached the very payload
+  that says there is no URL. The advice could never work, and the error contradicted this
+  section's own rule that a category CR runs no survey on is not a failure.
 
 #### Auth semantics — this tool is anonymous-only
 

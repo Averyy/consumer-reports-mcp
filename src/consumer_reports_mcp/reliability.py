@@ -226,6 +226,35 @@ async def cr_reliability(
             error=E.error_model(served),
             data=None,
         )
+    if not served.survey_published:
+        # CR runs no survey on this category and says so in its own category payload. SPEC §7:
+        # "A category CR runs no survey on is not a failure" — the answer is the structural
+        # no-data envelope, `has_reliability_data: false` with `brands: []`, never an error.
+        # `cr_url` is null because there is no reliability page to name.
+        row = rt.cache.index_row(served.category_id)
+        return E.ReliabilityEnvelope(
+            auth_state="anonymous",
+            scores_available=E.SurveyScoresAvailable(**survey_scores_available([])),
+            provenance=E.ReliabilityProvenance(
+                fetched_at=served.fetched_at,
+                cr_url=served.cr_url,
+                from_cache=served.from_cache,
+                stale=served.stale,
+            ),
+            warnings=list(served.warnings) + rt.discovery.warnings(),
+            error=None,
+            data=E.ReliabilityData(
+                category=E.CategoryRef(
+                    id=served.category_id,
+                    slug=(row or {}).get("slug"),
+                    name=(row or {}).get("display_name"),
+                ),
+                brands=[],
+                methodology=None,
+                has_reliability_data=False,
+                has_owner_satisfaction_data=False,
+            ),
+        )
     parsed = parse_reliability(served.payload, served.category_id, full=detail == "full")
     if not parsed["found"]:
         # the cached payload does not describe this category (a constructed URL that landed

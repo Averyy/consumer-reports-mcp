@@ -8,6 +8,7 @@ from consumer_reports_mcp.reliability import cr_reliability, parse_reliability
 from tests.conftest import (
     FakeResponse,
     RuntimeHarness,
+    fixture_envelope,
     make_maintenance_page,
     make_reliability_page,
 )
@@ -85,6 +86,37 @@ async def test_auth_state_anonymous_even_with_member_session(tmp_path, reliabili
     assert out.data.brands[1].owner_satisfaction is None
     assert out.data.methodology is None
     assert out.provenance.cr_url == REL_URL and out.provenance.from_cache is False
+
+
+async def test_a_category_cr_runs_no_survey_on_is_a_success_not_an_error(tmp_path, c37162):
+    """SPEC §7: "A category CR runs no survey on is not a failure" — the answer is the
+    structural no-data envelope. Filed against c33041 (upright freezers), which returned
+    `fetch_failed`/`url_unresolved` telling the caller to run `cr_ratings` so the real URL
+    would be cached; they had, and the cached payload is what says there is no URL."""
+    import copy
+
+    fx = copy.deepcopy(c37162)
+    args = fx["filter_instance"]["args"]
+    args.pop("reliabilityURL", None)
+    for c in args["cats"]:
+        c["reliabilityURL"] = False
+
+    h = RuntimeHarness(tmp_path)
+    h.rt.cache.write_category(
+        fixture_envelope(fx), tier="anonymous", scored=False, fetched_at=h.now
+    )
+    out = await cr_reliability(h.rt, "c37162")
+
+    assert out.error is None  # never `fetch_failed`, never `reliability_payload_missing`
+    assert out.data.brands == [] and out.data.has_reliability_data is False
+    assert out.data.has_owner_satisfaction_data is False and out.data.methodology is None
+    assert out.data.category.id == 37162 and out.data.category.slug == "french-door-refrigerator"
+    # "absent" (CR published none), never "unavailable" (a membership would show it)
+    assert out.scores_available.predicted_reliability == "absent"
+    assert out.scores_available.owner_satisfaction == "absent"
+    assert out.provenance.cr_url is None  # there is no reliability page to name
+    assert out.provenance.from_cache is True
+    assert h.sess.requests == []  # no URL guessed, no request spent
 
 
 async def test_scores_available_never_unavailable(tmp_path, reliability_fixture):

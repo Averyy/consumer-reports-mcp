@@ -584,6 +584,28 @@ def test_reliability_url_from_cache(cache, anon_env):
     assert cache.reliability_url_from_cache(99999) is None
 
 
+def test_reliability_url_status_tells_no_survey_from_never_looked(cache, c37162):
+    """CR writes `reliabilityURL: false` — the boolean — on categories it runs no survey on
+    (measured: c33041 upright freezers). That is an ANSWER, and collapsing it into the same
+    None as "we have not fetched this category" is what made `cr_reliability` guess a URL,
+    404, and tell the caller to cache a URL CR never published."""
+    import copy
+
+    assert cache.reliability_url_status(33041) == (None, "not_fetched", None)  # never looked
+
+    fx = copy.deepcopy(c37162)
+    args = fx["filter_instance"]["args"]
+    args.pop("reliabilityURL", None)  # CR omits the top-level key too on these categories
+    for c in args["cats"]:
+        c["reliabilityURL"] = False
+    cache.write_category(fixture_envelope(fx), tier="anonymous", scored=False, fetched_at=days(1))
+
+    known = cache.reliability_url_status(37162)
+    assert known.url is None and known.status == "none_published"
+    assert known.seen_at is not None  # the payload that says so dates the answer
+    assert cache.reliability_url_from_cache(37162) is None  # the wrapper still flattens to None
+
+
 # --------------------------------------------------------------------------- checked_at / dedupe
 
 

@@ -544,6 +544,29 @@ async def test_reliability_url_from_cached_args_cats(tmp_path, c37162, reliabili
     assert h.requests == [top_url]  # the real reliabilityURL from args.cats, not a guess
 
 
+async def test_no_survey_published_is_answered_from_the_payload_without_a_request(tmp_path, c37162):
+    """c33041 (upright freezers) filed this: `cr_reliability` 404'd and told the caller to run
+    `cr_ratings` so the real URL would be cached — but they HAD run it, and the payload it
+    cached is what says `reliabilityURL: false`. CR runs no survey there, so there is no URL to
+    cache and the advice could never work. The answer costs no request."""
+    import copy
+
+    fx = copy.deepcopy(c37162)
+    args = fx["filter_instance"]["args"]
+    args.pop("reliabilityURL", None)
+    for c in args["cats"]:
+        c["reliabilityURL"] = False
+
+    h = Harness(tmp_path, cookie=False)
+    h.seed(fixture_envelope(fx), tier="anonymous", scored=False, age_days=1)
+    out = await h.repo.get_reliability("c37162")
+
+    assert not isinstance(out, ToolError)  # not a failure: SPEC §7
+    assert out.survey_published is False and out.payload == {}
+    assert out.cr_url is None and out.from_cache is True
+    assert h.requests == []  # nothing was guessed, nothing was fetched
+
+
 async def test_reliability_constructed_url_404_is_url_unresolved(tmp_path):
     h = Harness(tmp_path, cookie=False)  # nothing cached → constructed from the canonical path
     h.sess.push(FakeResponse(url=REL_URL, status_code=404, content=b"<title>404</title>"))
