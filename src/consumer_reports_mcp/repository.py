@@ -559,15 +559,42 @@ class Repository:
         return self._serve_reliability(fresh, from_cache=False)
 
     def _serve_reliability(self, sel, *, from_cache: bool, warnings=None) -> ReliabilityServed:
+        payload = self.cache.load_reliability(sel.rowid)
+        cr_url, url_warnings = self._reliability_url(sel, payload)
         return ReliabilityServed(
-            payload=self.cache.load_reliability(sel.rowid),
+            payload=payload,
             category_id=sel.category_id,
             fetched_at=sel.fetched_at,
-            cr_url=sel.final_url,
+            cr_url=cr_url,
             from_cache=from_cache,
             stale=sel.stale,
-            warnings=list(warnings or []),
+            warnings=list(warnings or []) + url_warnings,
         )
+
+    def _reliability_url(self, sel, payload: dict) -> tuple[str | None, list[str]]:
+        """`cr_url` names the page for the category ASKED FOR, never whichever page happened to
+        fill the cache. One fetch fans out to every sibling the payload names (SPEC §7) and each
+        of those rows carries the FETCHED page's `final_url`, so french-door reliability, served
+        from a row written while fetching top-freezer, cited top-freezer's page as its source —
+        a citation naming another category's numbers, on the one field that exists to be quoted.
+
+        The payload says which category was fetched: `data.category` is the fetched one and the
+        rest are siblings, the same read `availability_for_product` makes. On a sibling row the
+        URL comes from CR's own `reliabilityURL` for the requested id; `none_published` has no
+        page to name and `not_fetched` has none we know, and those are different facts."""
+        if _fetched_category_id(payload) == sel.category_id:
+            return sel.final_url, []
+        if sel.category_id not in _reliability_ids(payload, sel.category_id):
+            # the payload does not describe this category at all: the drift guard's case, where
+            # `cr_url` is the URL that landed elsewhere and IS the diagnostic (SPEC §7). The
+            # citation rule below is about a row that answers for the id it is filed under.
+            return sel.final_url, []
+        known = self.cache.reliability_url_status(sel.category_id)
+        if known.url:
+            return known.url, []
+        if known.status == RANGE_NONE:
+            return None, []
+        return None, ["reliability_url_unknown"]
 
     def _rel_fallback(
         self, cid: int, sel, code: str, detail: dict
@@ -601,6 +628,14 @@ def _constructed_reliability_url(canonical_url: str, cid: int) -> str:
     return "/".join(parts) + f"/reliability/c{cid}/"
 
 
+def _fetched_category_id(store: dict | None) -> int | None:
+    """The category whose reliability page this payload WAS fetched from: `data.category`, as
+    against the siblings in `data.categories[]` (RECON §9)."""
+    data = store.get("data") if isinstance(store, dict) else None
+    cat = data.get("category") if isinstance(data, dict) else None
+    return ingest._int(cat.get("_id")) if isinstance(cat, dict) else None
+
+
 def _reliability_ids(store: dict | None, cid: int) -> list[int]:
     """Every sibling id the payload names — from the payload being parsed, never a count. A
     non-numeric `_id` is fetched content that does not name a category: skipped, never raised
@@ -611,8 +646,7 @@ def _reliability_ids(store: dict | None, cid: int) -> list[int]:
     if not isinstance(data, dict):
         return []
     ids: list[int] = []
-    cat = data.get("category")
-    own = ingest._int(cat.get("_id")) if isinstance(cat, dict) else None
+    own = _fetched_category_id(store)
     if own is not None:
         ids.append(own)
     for c in data.get("categories") or []:

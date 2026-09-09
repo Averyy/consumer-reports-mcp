@@ -587,6 +587,7 @@ async def test_reliability_never_fetches_category_page(tmp_path, reliability_fix
     assert not isinstance(out, ToolError)
     assert h.requests == [REL_URL] and CAT_URL not in h.requests
     assert h.cache.has_rows(37162) is False
+    assert out.cr_url == REL_URL  # its own page: the URL that was fetched IS the citation
 
 
 async def test_reliability_fanout_hits_sibling_next_call(tmp_path, reliability_fixture):
@@ -600,6 +601,38 @@ async def test_reliability_fanout_hits_sibling_next_call(tmp_path, reliability_f
     assert len(h.requests) == 1
     # the fan-out list comes from the payload, so 29738 (no survey) is cached too
     assert h.cache.select_reliability(29738, 30, T0) is not None
+
+
+async def test_a_fanout_row_cites_the_category_asked_for(tmp_path, c37162, reliability_fixture):
+    """The filed bug: french-door reliability, served from a row written while fetching another
+    page in the family, cited THAT page. `cr_url` is the citation — one naming another
+    category's reliability page reads as brands transferred from the wrong survey."""
+    h = Harness(tmp_path, cookie=False)
+    h.seed(fixture_envelope(c37162), tier="anonymous", scored=False, age_days=1)
+    h.sess.route(
+        REL_URL, FakeResponse(url=REL_URL, content=make_reliability_page(reliability_fixture))
+    )
+    own = await h.repo.get_reliability(37162)
+    sibling = await h.repo.get_reliability(28722)
+    assert not isinstance(own, ToolError) and not isinstance(sibling, ToolError)
+    assert own.cr_url == REL_URL  # the page this row WAS fetched from
+    top = WWW + "/appliances/refrigerators/top-freezer-refrigerator/reliability/c28722/"
+    assert sibling.from_cache is True and sibling.cr_url == top
+    assert sibling.warnings == [] and len(h.requests) == 1  # CR's own URL, not a second fetch
+
+
+async def test_a_fanout_row_with_no_url_for_the_id_names_none(tmp_path, reliability_fixture):
+    """With no category payload cached, CR's `reliabilityURL` for the sibling is unknown. A
+    guess is not a citation, so `cr_url` is null and the warning says which fact is missing —
+    `not_fetched`, distinct from `none_published`, where there is no page at all."""
+    h = Harness(tmp_path, cookie=False)
+    h.sess.route(
+        REL_URL, FakeResponse(url=REL_URL, content=make_reliability_page(reliability_fixture))
+    )
+    await h.repo.get_reliability(37162)
+    sibling = await h.repo.get_reliability(28722)
+    assert not isinstance(sibling, ToolError)
+    assert sibling.cr_url is None and sibling.warnings == ["reliability_url_unknown"]
 
 
 async def test_reliability_fetch_never_changes_session_health(tmp_path, reliability_fixture):

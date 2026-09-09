@@ -31,7 +31,9 @@ DESCRIPTIONS: dict[str, str] = {
     "cr_ratings": (
         "Consumer Reports ratings for a product category, ranked within CR's own display "
         'groups. A `null` score means "not visible in this session", never "CR did not rate '
-        'this model" — check `auth_state`. Scores are never estimated.'
+        'this model" — check `auth_state`, or `status` on the attribute itself, which reads '
+        "`not_applicable` where CR does not run that test on that model. Scores are never "
+        "estimated."
     ),
     "cr_product": (
         "Full Consumer Reports record for one product: every scored attribute, specs, owner "
@@ -156,7 +158,9 @@ def build_server(runtime: Runtime | None = None, *, settings: Settings | None = 
             "→ cr_ratings → cr_product; cr_reliability for brand surveys; cr_search to find a "
             "category. Cars: cr_car_search → cr_car, or cr_cars to list. A null score is a "
             "session limitation, never an absence of a rating — read auth_state and "
-            "scores_available, which are typed enums in every response. When the user asks to "
+            "scores_available, which are typed enums in every response. The exception is "
+            "status: 'not_applicable' on an attribute: CR does not run that test on that model, "
+            "so it is neither rated nor gated. When the user asks to "
             "connect their membership, call cr_sign_in and then cr_auth_status(wait_s=45); "
             "never call cr_sign_in unasked."
         ),

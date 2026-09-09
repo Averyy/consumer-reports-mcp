@@ -9,6 +9,7 @@ import pytest
 from consumer_reports_mcp.attributes import build_definitions
 from consumer_reports_mcp.ingest import build_envelope
 from consumer_reports_mcp.normalize import (
+    attribute_all_null,
     product_shape,
     rank_table,
     scores_available,
@@ -286,3 +287,92 @@ def test_product_names_and_group_are_decoded(env):
     s = product_shape(p, "summary", env, defs, ranks)
     assert s["model"] == 'Aspire 14" AI Copilot+' and s["brand"] == "Black & Decker"
     assert s["group"] == "30 – 32 Inch"
+
+
+# ------------------------------------------------------- CR's `0` on a rating column (RECON §9i)
+
+HOT_GARAGE = 11196
+
+
+def _rating_fi(*values, kind="numeric-rating-score"):
+    """One product per value, each carrying the one attribute."""
+    return {
+        "data": {
+            str(1000 + i): {
+                "id": 1000 + i,
+                "_groupId": 1,
+                "_groupName": "G",
+                "_overallSortIndex": float(i),
+                "overallDisplayScore": None,
+                "attrs": [
+                    {
+                        "attributeId": HOT_GARAGE,
+                        "attributeTypeName": kind,
+                        "name": "Hot Garage Ready",
+                        "value": v,
+                    }
+                ],
+            }
+            for i, v in enumerate(values)
+        }
+    }
+
+
+def _rating_env(fi):
+    return {
+        "filter_instance": fi,
+        "category_attributes": [
+            {
+                "attributeId": HOT_GARAGE,
+                "name": "Hot Garage Ready",
+                "attributeDataTypeName": "numeric-rating-score",
+                "sortOrder": 8,
+            }
+        ],
+    }
+
+
+def test_standard_ratings_carry_the_status_and_a_null_value():
+    fi = _rating_fi(0, 4)
+    env = _rating_env(fi)
+    defs = build_definitions(env)
+    products = list(fi["data"].values())
+    ranks = rank_table(fi)
+    na = product_shape(products[0], "standard", env, defs, ranks)
+    rated = product_shape(products[1], "standard", env, defs, ranks)
+    assert na["ratings"] == [
+        {"id": HOT_GARAGE, "name": "Hot Garage Ready", "value": None, "status": "not_applicable"}
+    ]
+    assert rated["ratings"] == [
+        {"id": HOT_GARAGE, "name": "Hot Garage Ready", "value": 4, "status": None}
+    ]
+
+
+def test_a_product_missing_the_attribute_is_not_not_applicable():
+    """ "CR shipped no entry" and "CR shipped its not-applicable marker" are different facts."""
+    fi = _rating_fi(4)
+    env = _rating_env(fi)
+    bare = {"id": 2000, "_groupId": 1, "_overallSortIndex": 9.0, "attrs": []}
+    shape = product_shape(bare, "standard", env, build_definitions(env), {})
+    assert shape["ratings"] == [
+        {"id": HOT_GARAGE, "name": "Hot Garage Ready", "value": None, "status": None}
+    ]
+    projected = product_shape(
+        bare, "summary", env, build_definitions(env), {}, extra_attribute_ids=(HOT_GARAGE,)
+    )["projected_attributes"]
+    assert projected[0]["status"] is None and projected[0]["raw_value"] is None
+
+
+def test_a_column_of_not_applicable_markers_reports_no_ratings():
+    """SPEC §10: `available` means a product carries a value. CR's `0` is not one, so a member
+    row whose only rating column is all-`0` is `absent`, not `available`."""
+    assert scores_available(_rating_fi(0, 0), "member")["attribute_ratings"] == "absent"
+    assert scores_available(_rating_fi(0, 0), "anonymous")["attribute_ratings"] == "unavailable"
+    assert scores_available(_rating_fi(0, 3), "member")["attribute_ratings"] == "available"
+
+
+def test_attribute_all_null_reads_the_marker_but_not_a_zero_spec():
+    assert attribute_all_null(_rating_fi(0, 0), HOT_GARAGE)
+    assert not attribute_all_null(_rating_fi(0, 3), HOT_GARAGE)
+    # the same zeros on a spec column are measurements: a filter on it is legitimate
+    assert not attribute_all_null(_rating_fi(0, 0, kind="numeric-general"), HOT_GARAGE)

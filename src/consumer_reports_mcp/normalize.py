@@ -10,7 +10,7 @@ from .attributes import (
     SOURCE_ATTRS,
     SOURCE_CATEGORY_ATTRIBUTES,
     Definition,
-    is_blank,
+    has_no_value,
     normalize_entry,
     rating_definitions,
 )
@@ -208,9 +208,13 @@ def product_shape(
             entry = entries.get(aid)
             if entry is not None:
                 n = normalize_entry(entry, defs, warnings, include_description=False)
-                ratings.append({"id": aid, "name": n["name"], "value": n["value"]})
+                ratings.append(
+                    {"id": aid, "name": n["name"], "value": n["value"], "status": n["status"]}
+                )
             else:
-                ratings.append({"id": aid, "name": d.name if d else None, "value": None})
+                ratings.append(
+                    {"id": aid, "name": d.name if d else None, "value": None, "status": None}
+                )
         shape["ratings"] = ratings
         shape["owner_satisfaction"] = _survey(product, "ownerSatisfaction")
         shape["predicted_reliability"] = _survey(product, "reliability")
@@ -234,6 +238,9 @@ def product_shape(
                         "id": int(aid),
                         "name": d.name if d else None,
                         "kind": d.kind if d else None,
+                        # the product carries no entry at all: "CR shipped nothing here", which
+                        # is not `not_applicable` — that is CR's own statement about the test
+                        "status": None,
                         "value": None,
                         "raw_value": None,
                         "unit": d.unit if d else None,
@@ -266,7 +273,8 @@ def scores_available(filter_instance: dict, data_tier: str) -> dict[str, str]:
             found["recommended_flag"] = True
         if not found["attribute_ratings"]:
             for e in p.get("attrs") or []:
-                if e.get("attributeTypeName") == RATING_KIND and not is_blank(e.get("value")):
+                kind = e.get("attributeTypeName")
+                if kind == RATING_KIND and not has_no_value(kind, e.get("value")):
                     found["attribute_ratings"] = True
                     break
         if all(found.values()):
@@ -277,14 +285,19 @@ def scores_available(filter_instance: dict, data_tier: str) -> dict[str, str]:
 
 def attribute_all_null(filter_instance: dict, attribute_id: int) -> bool:
     """True when every product's value for this attribute is null, blank (`""`, CR's empty
-    cell) or missing in the payload — `is_blank`, the same reading `coerce` gives a blank."""
+    cell), CR's not-applicable `0` on a rating column, or missing in the payload — `has_no_value`,
+    the reading every availability check gives a cell."""
     for p in products_of(filter_instance):
         for e in p.get("attrs") or []:
             try:
-                if int(e.get("attributeId")) == attribute_id and not is_blank(e.get("value")):
-                    return False
+                if int(e.get("attributeId")) != attribute_id:
+                    continue
             except (TypeError, ValueError):
                 continue
+            # the entry's own `attributeTypeName` IS the dataType (RECON §9h), the same read
+            # `scores_available` and `is_scored` make
+            if not has_no_value(e.get("attributeTypeName"), e.get("value")):
+                return False
     return True
 
 

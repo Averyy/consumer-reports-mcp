@@ -54,8 +54,13 @@ Products
   fragile anchor in the project and the live canary exists for it.
 - `attributeTypeName` is a homonym (type on definitions, dataType on product entries). Coerce
   by declared dataType, never by value shape; never coerce `text`; never infer a unit.
+- A `0` on a `numeric-rating-score` is CR's not-applicable marker, never a score: `value` is
+  null, `status` is `not_applicable`, `raw_value` keeps the 0 (`attributes.is_not_applicable`).
+  On every other kind a `0` is a measurement and passes through untouched.
 - Never derive or estimate a score. A null score is CR's value or a session limitation, never
   "unrated".
+- `cr_reliability`'s `cr_url` names the page for the id ASKED FOR. One fetch fans out to every
+  sibling, so a row's `final_url` is another category's page as often as not.
 
 Cars
 - Cars are a second architecture (`cars-api`, public key read from the car page, no cookie),

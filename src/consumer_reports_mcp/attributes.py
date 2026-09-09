@@ -20,6 +20,7 @@ NUMERIC_KINDS = frozenset(
 )
 BOOLEAN_KIND = "boolean"
 RATING_KIND = "numeric-rating-score"
+NOT_APPLICABLE = "not_applicable"  # the one `Attribute.status` token (SPEC §7)
 SOURCE_CATEGORY_ATTRIBUTES = "category_attributes"
 SOURCE_ATTRS = "attrs"
 SOURCE_ENTRY = "entry"
@@ -121,6 +122,35 @@ def is_blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+def is_not_applicable(kind: str | None, value: Any) -> bool:
+    """CR's off-scale `0` on a RATING column: "this test does not apply to this model", never a
+    score of zero. Rating columns only — `0` is a real measurement on the other numeric kinds
+    (a laptop with no USB-A ports, a mattress with no handles), and this must not touch them.
+
+    Measured over the 52 categories cached locally (RECON §9i): a rating column uses `null` or
+    `0` for its empty cell and **never both** — 22 columns of `0`, the rest of `null`, not one
+    mixing them. Two natural experiments say what the `0` means: every one of the 83 humidifiers
+    scoring `0` on *Humidistat accuracy* ships `Humidistat: No`, and all 38 with a humidistat are
+    scored (121/121); every TV scoring `0` on *UHD picture quality* or *HDR* is an FHD or HD set,
+    and all 297 4K sets are scored. A `0` also appears on no anonymous row, so it is not the
+    gated tier leaking a placeholder where a score would be.
+
+    Read as a score it is CR rating the model worst-possible on a test CR never ran — the exact
+    fabrication `overall_score: null` exists to prevent, in the one place an agent cannot tell.
+    """
+    if kind != RATING_KIND:
+        return False
+    v, ok = coerce(kind, value)
+    return ok and isinstance(v, int | float) and not isinstance(v, bool) and v == 0
+
+
+def has_no_value(kind: str | None, value: Any) -> bool:
+    """`is_blank`, plus a rating column's off-scale `0`. The reading every availability check
+    gives a cell — `scores_available`, `attribute_all_null`, `is_scored` — so a column of CR's
+    not-applicable markers cannot pass one check as "a value" and another as "nothing"."""
+    return is_blank(value) or is_not_applicable(kind, value)
+
+
 def coerce(kind: str | None, value: Any) -> tuple[Any, bool]:
     """(value, ok). `None` is never a failure — it is a gated or absent value. Unknown kinds,
     `text` and `custom` pass through untouched."""
@@ -168,23 +198,30 @@ def normalize_entry(
     *,
     include_description: bool = True,
 ) -> dict:
-    """{id, name, kind, value, raw_value, unit, description, group} — lossless (SPEC §7)."""
+    """{id, name, kind, status, value, raw_value, unit, description, group} — lossless (SPEC §7).
+
+    `status` is `not_applicable` where CR shipped a rating column's off-scale `0`
+    (`is_not_applicable`); `value` is then null and `raw_value` keeps the `0` CR sent."""
     aid = _int(entry.get("attributeId"))
     d = defs.get(aid) if aid is not None else None
     entry_kind = _clean(entry.get("attributeTypeName"))
     kind = (d.kind if d and d.kind else None) or entry_kind
     raw = entry.get("value")
     value, ok = coerce(kind, raw)
+    status = None
     if not ok:
         value = None
         if warnings is not None:
             w = f"coercion_failed:{aid if aid is not None else '?'}"
             if w not in warnings:  # one warning per attribute, however many products carry it
                 warnings.append(w)
+    elif is_not_applicable(kind, raw):
+        value, status = None, NOT_APPLICABLE
     return {
         "id": aid,
         "name": (d.name if d and d.name else None) or _clean(entry.get("name")),
         "kind": kind,
+        "status": status,
         "value": value,
         "raw_value": raw,
         "unit": d.unit if d else None,

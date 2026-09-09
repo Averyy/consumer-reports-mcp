@@ -827,6 +827,67 @@ being parsed, not assumed equal.
 Score range and survey data are independent: Mini Fridges and Outdoor have ranges with
 `HasReliabilityData: false`.
 
+## 9i. `0` on a rating column is CR's "not applicable", and only there — 2026-09-09
+
+*Measured over every category payload in the local cache: 52 categories, 77 rows (43 member
+tier, 34 anonymous), reading every product `attrs[]` entry.*
+
+A rating cell arrives as one of three things. Across 20,112 `numeric-rating-score` entries:
+
+| Value | Entries |
+|---|---|
+| 1–5 | 16,676 |
+| `null` | 3,259 |
+| **`0`** | 177 |
+
+**No rating column ever carries both `0` and `null`.** 22 columns use `0` for their empty cell
+and every other column uses `null`; not one mixes them. Were `0` a real worst-possible score, a
+column carrying it alongside `null` for the models CR had not tested would be the ordinary case.
+There is not one.
+
+**Two natural experiments say what it means**, and in both the split is total:
+
+| Category | Column | `0` | Scored | What the `0` rows have in common |
+|---|---|---|---|---|
+| `c32968` Humidifiers | Humidistat accuracy | 83 | 38 | every one ships `Humidistat: No`, every scored one `Yes` (121/121) |
+| `c28700` TVs | UHD picture quality | 6 | 297 | every one is an FHD or HD set; all 297 4K sets are scored |
+| `c28700` TVs | HDR | 6 | 297 | the same six FHD/HD sets |
+
+`c37162` French-Door Refrigerators repeats it on *Icemaker Performance*: of the 5 models scoring
+`0`, three ship `Icemaker: No` or `Optional`. The other two have an icemaker and no score, so
+the marker covers "CR did not run this test" as well as "the test cannot apply" — either way it
+is not a rating.
+
+Two more facts pin it down:
+
+- **`0` appears on no anonymous row.** All 177 sit on member-tier rows, so it is not the gated
+  tier leaking a placeholder where a score would be.
+- **The definition declares a blob scale** — `ratingsBlobScale`, `5pt` on 266 of the 330 rating
+  definitions and `10pt` on 52 — and the values observed under both are 1–5. `0` is not a point
+  on either.
+
+Read as a score, `Hot Garage Ready: 0` says CR put an upright freezer in a 110 °F room and
+watched it fail. CR never ran the test.
+
+### It does NOT generalise to the other numeric kinds
+
+`numeric-general` and `numeric-price` carry 262 zeros between them, and there `0` is a
+measurement: `Number of USB-A: 0` on 28 of 215 laptops, `Grips: 0` on 174 of 293 mattresses
+(no carry handles), `Annual Filter Cost: $0` on 5 of 169 room air purifiers, four of them
+models whose main filter is washed or absent rather than replaced.
+
+The same columns are also where a `0` is sometimes plainly a gap — an upright freezer with
+`Annual usage cost: $0` beside a $45–$115 spread over the other 29 models, a countertop
+microwave with `Usable capacity: 0` — and **nothing in the payload separates the two**. The
+dictionary's distinct-value list looks like a discriminator and is not: `attrs[].data` renders
+every zero as the string `"0"` beside integer values, on the real counts and the gaps alike (all
+30 zero-bearing columns that have a dictionary entry, ratings included; two spec columns are not
+filterable and have none). Neither is the presence of `null` in the column — no spec or price
+column carrying a `0` carries a `null` anywhere either.
+
+So the rule is scoped to rating columns, where CR's own scale rules `0` out. Everything else
+passes through as CR sent it. See `SPEC.md` §7 *Attribute normalization*.
+
 ## 10. Spike results — 2026-09-03
 
 Run through **wafer-py 0.4.9** (the published release, not the working checkout), anonymously

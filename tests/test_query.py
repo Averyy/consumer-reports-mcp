@@ -164,6 +164,41 @@ def test_rating_filter_on_retained_member_row_works_for_anonymous_caller(c37162,
     assert len(out) == 8
 
 
+def test_not_applicable_marker_matches_no_rating_filter(c37162, defs):
+    """CR's `0` is not a score (RECON §9i), so it matches no rating filter — including a range
+    that spans it, which would otherwise return the models CR never ran the test on."""
+    fi = fill_scores_in(c37162["filter_instance"])
+    rating_id = next(d.id for d in defs.values() if d.kind == "numeric-rating-score")
+    marked = next(iter(fi["data"].values()))
+    for e in marked["attrs"]:
+        if e["attributeId"] == rating_id:
+            e["value"] = 0
+
+    def run(spec):
+        return apply_filters(
+            list(fi["data"].values()), FilterSpec(features={rating_id: spec}), defs, fi, "member"
+        )
+
+    assert marked["id"] not in {p["id"] for p in run([0, 2])}
+    assert marked["id"] not in {p["id"] for p in run(0)}
+    assert marked["id"] not in {p["id"] for p in run([None, None])}
+
+
+def test_a_rating_column_of_markers_is_an_unavailable_attribute(c37162, defs):
+    fi = fill_scores_in(c37162["filter_instance"])
+    rating_id = next(d.id for d in defs.values() if d.kind == "numeric-rating-score")
+    for product in fi["data"].values():
+        for e in product["attrs"]:
+            if e["attributeId"] == rating_id:
+                e["value"] = 0
+    with pytest.raises(QueryError) as ei:
+        apply_filters(
+            list(fi["data"].values()), FilterSpec(features={rating_id: [1, 5]}), defs, fi, "member"
+        )
+    assert ei.value.code == "filter_on_unavailable_attribute"
+    assert ei.value.extra["reason"] == "absent"
+
+
 def test_banks_price_filter_is_absent_not_gated(banks):
     env = fixture_envelope(banks)
     fi = env["filter_instance"]

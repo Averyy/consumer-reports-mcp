@@ -5,9 +5,13 @@ from __future__ import annotations
 import pytest
 
 from consumer_reports_mcp.attributes import (
+    NOT_APPLICABLE,
+    RATING_KIND,
     Definition,
     build_definitions,
     coerce,
+    has_no_value,
+    is_not_applicable,
     normalize_entry,
     rating_definitions,
 )
@@ -102,6 +106,7 @@ def test_unjoined_entry_kept_with_entry_type(env, defs):
         "id": 999001,
         "name": "Mystery flag",
         "kind": "boolean",
+        "status": None,
         "value": True,
         "raw_value": "Yes",
         "unit": None,
@@ -259,3 +264,67 @@ def test_non_finite_numerics_are_coercion_failures_not_values(raw):
     n = normalize_entry(entry, {}, warnings)
     assert n["value"] is None and n["raw_value"] is raw and warnings == ["coercion_failed:1"]
     assert "nan" not in json.dumps({"value": n["value"]}).lower()
+
+
+# ------------------------------------------------------- CR's `0` on a rating column (RECON §9i)
+
+
+def test_zero_is_not_applicable_on_a_rating_column_only():
+    """`0` is CR's "this test does not apply to this model" on a rating column, and a real
+    measurement on every other numeric kind — a monitor with no USB-A ports, a mattress with
+    no handles. Coerced by the DECLARED kind, so a string `"0"` reads the same as an int."""
+    for raw in (0, 0.0, "0", " 0 "):
+        assert is_not_applicable(RATING_KIND, raw)
+    for kind in ("numeric-general", "numeric-price", "numeric-overall-score", "text", "boolean"):
+        assert not is_not_applicable(kind, 0)
+    for raw in (1, 5, 0.5, None, "", "n/a", False, True):
+        assert not is_not_applicable(RATING_KIND, raw)
+
+
+def test_not_applicable_nulls_the_value_and_keeps_the_raw_zero():
+    entry = {
+        "attributeId": 11196,
+        "attributeTypeName": RATING_KIND,
+        "name": "Hot Garage Ready",
+        "value": 0,
+    }
+    warnings: list[str] = []
+    n = normalize_entry(entry, {}, warnings)
+    assert n["value"] is None and n["raw_value"] == 0
+    assert n["status"] == NOT_APPLICABLE
+    assert warnings == []  # CR's marker is data, not a coercion failure
+
+
+def test_a_real_rating_and_a_zero_spec_carry_no_status():
+    rated = normalize_entry(
+        {"attributeId": 11196, "attributeTypeName": RATING_KIND, "value": 3}, {}
+    )
+    assert rated["value"] == 3 and rated["status"] is None
+    ports = normalize_entry(
+        {"attributeId": 11210, "attributeTypeName": "numeric-general", "value": 0}, {}
+    )
+    assert ports["value"] == 0 and ports["status"] is None
+
+
+def test_declared_kind_decides_not_the_entry_type(c37162):
+    """The definition's `attributeDataTypeName` is authoritative (RECON §9h): an entry typed
+    `numeric-rating-score` whose definition declares a spec keeps its `0`."""
+    d = Definition(
+        id=77,
+        name="Number of shelves",
+        display_name=None,
+        kind="numeric-general",
+        unit=None,
+        description=None,
+        group=None,
+        sort_order=None,
+        source="category_attributes",
+    )
+    n = normalize_entry({"attributeId": 77, "attributeTypeName": RATING_KIND, "value": 0}, {77: d})
+    assert n["kind"] == "numeric-general" and n["value"] == 0 and n["status"] is None
+
+
+def test_has_no_value_covers_blank_and_the_not_applicable_zero():
+    assert has_no_value(RATING_KIND, 0) and has_no_value(RATING_KIND, None)
+    assert has_no_value(RATING_KIND, "  ") and has_no_value("numeric-price", None)
+    assert not has_no_value(RATING_KIND, 1) and not has_no_value("numeric-price", 0)

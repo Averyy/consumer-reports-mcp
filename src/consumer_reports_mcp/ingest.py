@@ -308,15 +308,17 @@ def display_name_of(envelope: dict) -> str | None:
 
 def is_scored(filter_instance: dict) -> bool:
     """True when any gated value is populated — the same derivation `scores_available` uses,
-    on the same reading of "populated" (`is_blank`): a rating column shipped as `""` must not
-    write a `scored=1` row that never-downgrade then retains over a real one."""
-    from .attributes import is_blank
+    on the same reading of "populated" (`has_no_value`): a rating column shipped as `""`, or as
+    CR's not-applicable `0`, must not write a `scored=1` row that never-downgrade then retains
+    over a real one."""
+    from .attributes import has_no_value, is_blank
 
     for product in _products(filter_instance):
         if not is_blank(product.get("overallDisplayScore")):
             return True
         for entry in product.get("attrs") or []:
-            if entry.get("attributeTypeName") == RATING_KIND and not is_blank(entry.get("value")):
+            kind = entry.get("attributeTypeName")
+            if kind == RATING_KIND and not has_no_value(kind, entry.get("value")):
                 return True
     return False
 

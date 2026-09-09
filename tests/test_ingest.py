@@ -7,7 +7,13 @@ import json
 import pytest
 
 from consumer_reports_mcp import ingest
-from consumer_reports_mcp.ingest import build_envelope, classify, is_scored, product_index_rows
+from consumer_reports_mcp.ingest import (
+    RATING_KIND,
+    build_envelope,
+    classify,
+    is_scored,
+    product_index_rows,
+)
 from tests.conftest import (
     fill_scores_in,
     make_category_page,
@@ -150,6 +156,26 @@ def test_requested_id_alias_when_cid_differs(c200228):
 def test_scored_false_on_anon_true_after_fill(c37162):
     assert is_scored(c37162["filter_instance"]) is False
     assert is_scored(fill_scores_in(c37162["filter_instance"])) is True
+
+
+def test_not_applicable_markers_do_not_make_a_row_scored():
+    """CR's `0` on a rating column is not a score (RECON §9i), so it must not write a
+    `scored=1` row that never-downgrade then retains over a real one."""
+
+    def fi(value):
+        return {
+            "data": {
+                "1": {
+                    "id": 1,
+                    "overallDisplayScore": None,
+                    "attrs": [{"attributeId": 5, "attributeTypeName": RATING_KIND, "value": value}],
+                }
+            }
+        }
+
+    assert is_scored(fi(0)) is False
+    assert is_scored(fi("")) is False
+    assert is_scored(fi(3)) is True
 
 
 def test_family_groups_null_for_siblings_list_for_self(c37162):

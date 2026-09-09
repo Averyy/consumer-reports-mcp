@@ -268,6 +268,78 @@ async def test_ratings_full_and_coercion_warning(tmp_path, c37162):
 # --------------------------------------------------------------------------- cr_filters
 
 
+def _with_marker(fixture: dict, attribute_id: int, *, every: bool = False) -> dict:
+    """A member-tier copy of the fixture carrying CR's not-applicable `0` on one rating column."""
+    import copy
+
+    from tests.conftest import fill_scores_in
+
+    fx = copy.deepcopy(fixture)
+    fx["filter_instance"] = fill_scores_in(fx["filter_instance"])
+    for i, product in enumerate(fx["filter_instance"]["data"].values()):
+        if every or i == 0:
+            for e in product["attrs"]:
+                if e["attributeId"] == attribute_id:
+                    e["value"] = 0
+    return fx
+
+
+async def test_filters_range_excludes_the_not_applicable_marker(tmp_path, c37162):
+    """CR ships its `0` in the dictionary's own value list, which declared `{min: 0, max: 5}` on
+    a five-point scale — reading as though a zero were a legal score (RECON §9i)."""
+    fx = _with_marker(c37162, 11197)
+    h = RuntimeHarness(tmp_path)
+    h.route_page(fx, subscriber="true")
+    out = await cr_filters(h.rt, "french-door-refrigerator")
+    feats = next(f for f in out.data.filters if f.id == "features").features
+    thermostat = next(f for f in feats if f.id == 11197)
+    assert thermostat.range is not None and thermostat.range.min >= 1
+
+
+async def test_ratings_marker_is_typed_not_a_score(tmp_path, c37162):
+    fx = _with_marker(c37162, 11197)
+    marked = int(next(iter(fx["filter_instance"]["data"])))
+    h = RuntimeHarness(tmp_path)
+    h.route_page(fx, subscriber="true")
+    out = await cr_ratings(h.rt, "french-door-refrigerator", attributes=[11197])
+    products = [p for b in out.data.groups for p in b.products]
+    hit = next(p for p in products if p.id == marked)
+    projected = next(a for a in hit.projected_attributes if a.id == 11197)
+    assert projected.value is None and projected.raw_value == 0
+    assert projected.status == "not_applicable"
+    rating = next(r for r in hit.ratings if r.id == 11197)
+    assert rating.value is None and rating.status == "not_applicable"
+    other = next(p for p in products if p.id != marked)
+    assert next(r for r in other.ratings if r.id == 11197).status is None
+    dumped = out.model_dump(mode="json")["data"]["groups"][0]["products"]
+    shown = {p["id"]: p for p in dumped}
+    assert "status" not in next(r for r in shown[other.id]["ratings"] if r["id"] == 11197)
+    assert next(r for r in shown[marked]["ratings"] if r["id"] == 11197)["status"] == (
+        "not_applicable"
+    )
+
+
+async def test_every_rating_a_marker_reports_ratings_absent_on_a_member_row(tmp_path, c37162):
+    """SPEC §10: `available` means a product carries a value, and CR's `0` is not one. The row
+    is still member tier — `absent` is CR publishing nothing, never a session limitation."""
+    import copy
+
+    from tests.conftest import fill_scores_in
+
+    fx = copy.deepcopy(c37162)
+    fx["filter_instance"] = fill_scores_in(fx["filter_instance"])
+    for product in fx["filter_instance"]["data"].values():
+        for e in product["attrs"]:
+            if e["attributeTypeName"] == "numeric-rating-score":
+                e["value"] = 0
+    h = RuntimeHarness(tmp_path)
+    h.route_page(fx, subscriber="true")
+    out = await cr_ratings(h.rt, "french-door-refrigerator")
+    assert out.auth_state == "member"
+    assert out.scores_available.attribute_ratings == "absent"
+    assert out.scores_available.overall_score == "available"
+
+
 async def test_filters_numeric_collapsed_and_parameter_mapping(tmp_path, c37162):
     h = RuntimeHarness(tmp_path)
     h.route_page(c37162)

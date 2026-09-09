@@ -10,7 +10,13 @@ from urllib.parse import urlencode
 
 from . import envelope as E
 from . import lexical
-from .attributes import NUMERIC_KINDS, Definition, build_definitions, coerce
+from .attributes import (
+    NUMERIC_KINDS,
+    Definition,
+    build_definitions,
+    coerce,
+    is_not_applicable,
+)
 from .cache import row_id
 from .config import FILTER_VALUES_CAP, SEARCH_CAP, TYPEAHEAD_MIN_CHARS, TYPEAHEAD_URL
 from .extract import clean_text
@@ -300,14 +306,19 @@ def _numeric_range(values: list[Any]) -> E.NumericRange | None:
 
 
 def _feature_block(d: Definition, products: list[dict], shipped: list[Any]) -> E.FeatureFilter:
+    """The values a caller may filter on. CR's not-applicable `0` is not one of them: shipped in
+    the dictionary's own value list, it made `Hot Garage Ready` declare `{min: 0, max: 5}` on a
+    5-point scale, reading as though a zero were a legal score (`is_not_applicable`)."""
     observed: list[Any] = []
     for p in products:
         for e in p.get("attrs") or []:
             if e.get("attributeId") == d.id and e.get("value") is not None:
+                if is_not_applicable(d.kind, e.get("value")):
+                    continue
                 v, ok = coerce(d.kind, e.get("value"))
                 if ok and v is not None:
                     observed.append(v)
-    pool = observed or [coerce(d.kind, v)[0] for v in shipped]
+    pool = observed or [coerce(d.kind, v)[0] for v in shipped if not is_not_applicable(d.kind, v)]
     if d.kind in NUMERIC_KINDS:
         return E.FeatureFilter(
             id=d.id,

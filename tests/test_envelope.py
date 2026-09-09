@@ -217,6 +217,36 @@ def test_product_shapes_serialise_by_their_own_class():
         group="Ratings",
     ).model_dump()
     assert gated["value"] is None and "raw_value" not in gated and gated["description"] == "d"
+    assert "status" not in attr and "status" not in gated  # only where CR said why
+
+
+def test_not_applicable_status_serialises_beside_the_raw_zero():
+    """CR's `0` on a rating column: `value: null` like any absence, `status` saying WHY, and
+    `raw_value` keeping what CR sent — the pair is what tells it from a gated null."""
+    marked = E.Attribute(
+        id=11196,
+        name="Hot Garage Ready",
+        kind="numeric-rating-score",
+        status="not_applicable",
+        value=None,
+        raw_value=0,
+        unit=None,
+        description=None,
+        group=None,
+    ).model_dump()
+    assert marked == {
+        "id": 11196,
+        "name": "Hot Garage Ready",
+        "kind": "numeric-rating-score",
+        "status": "not_applicable",
+        "value": None,
+        "raw_value": 0,
+    }
+    rating = E.Rating(id=11196, name="Hot Garage Ready", value=None, status="not_applicable")
+    assert rating.model_dump()["status"] == "not_applicable"
+    assert "status" not in E.Rating(id=1, name="r", value=4).model_dump()
+    with pytest.raises(ValueError):
+        E.Rating(id=1, name="r", value=None, status="not_rated")
 
 
 def test_cars_envelopes_omit_auth_state_and_data_tier():

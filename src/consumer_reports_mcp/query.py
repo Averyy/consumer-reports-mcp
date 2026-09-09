@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from . import envelope as E
-from .attributes import BOOLEAN_KIND, NUMERIC_KINDS, Definition, coerce
+from .attributes import BOOLEAN_KIND, NUMERIC_KINDS, Definition, coerce, is_not_applicable
 from .config import FULL_LIMIT_MAX, FULL_LIMIT_NESTED, LIMIT_FLAT, LIMIT_MAX, LIMIT_NESTED
 from .extract import clean_text
 from .ingest import products_of
@@ -331,6 +331,10 @@ def _matches_feature(p: dict, d: Definition, spec: Any) -> bool:
     raw = _entry_value(p, d.id)
     value, ok = coerce(d.kind, raw)
     if not ok or value is None:
+        return False
+    if is_not_applicable(d.kind, raw):
+        # CR's not-applicable `0` is not a score, so it matches no rating filter — including
+        # `[0, 2]`, which would otherwise return the models CR never ran the test on
         return False
     if d.kind in NUMERIC_KINDS:
         want = _num_spec(spec)

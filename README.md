@@ -28,7 +28,9 @@ reliability and crash tests in full.
 
 Gated values come back as `null` and are never missing, beside typed `auth_state` and
 `scores_available` fields, so an agent can't read "no member session" as "CR did not rate this".
-Scores are never estimated.
+Scores are never estimated. Where CR marks a test as not applying to a model, that comes back as
+`null` with `status: "not_applicable"` rather than as the zero CR ships, which would read as a
+worst-possible score on a test CR never ran.
 
 ## Tools
 

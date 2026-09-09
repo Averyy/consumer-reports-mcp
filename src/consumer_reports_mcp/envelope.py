@@ -28,6 +28,12 @@ Session = Literal["none", "unverified", "active", "expired", "rejected"]
 SessionReason = Literal["cookie_past_expiry", "login_redirect", "served_anonymous"]
 DataTier = Literal["anonymous", "member"]
 Availability = Literal["available", "absent", "unavailable"]
+# Why a `null` value is not a value, where CR said so in a way a null cannot carry. One token
+# today: `not_applicable`, CR's off-scale `0` on a rating column — the test does not apply to
+# this model (no humidistat, not a 4K set), measured in `attributes.is_not_applicable` and
+# RECON §9i. Absent on every other attribute, including an ordinary gated or missing null, so
+# reading it is never a way to tell a gated score from an absent one — that is `scores_available`.
+AttributeStatus = Literal["not_applicable"]
 CarAvailability = Literal["available", "absent"]
 SignInStatus = Literal[
     "waiting", "verifying", "validating", "active", "in_progress", "refused", "failed"
@@ -72,6 +78,7 @@ WARNING_TOKENS = frozenset(
         "availability_not_cached",  # no reliability row on hand to merge availability from
         "availability_stale",  # merged from a reliability row past its TTL
         "typeahead_unavailable",  # CR's typeahead failed; only the local index was searched
+        "reliability_url_unknown",  # a sibling row answered and CR's own URL for the id is unknown
     }
 )
 WARNING_PREFIXES = frozenset(
@@ -247,16 +254,28 @@ class Rating(Strict):
     id: int
     name: str | None
     value: float | None = Field(description="null when not visible in this session, never absent")
+    status: AttributeStatus | None = Field(
+        default=None, description="why the value is null, when CR said; absent otherwise"
+    )
+
+    @model_serializer(mode="wrap")
+    def _lean(self, handler):
+        data = handler(self)
+        if data.get("status") is None:
+            data.pop("status", None)
+        return data
 
 
 class Attribute(Strict):
     """A normalized attribute (SPEC §7). Serialised leanly: `raw_value` only when it differs
-    from `value` (a coercion failure or a coerced string), and `unit`/`description`/`group`
-    only when CR ships one — `value: null` itself is always present."""
+    from `value` (a coercion failure, a coerced string, or CR's not-applicable `0`), `status`
+    only when CR said why the value is null, and `unit`/`description`/`group` only when CR ships
+    one — `value: null` itself is always present."""
 
     id: int | None
     name: str | None
     kind: str | None
+    status: AttributeStatus | None = None
     value: Any
     raw_value: Any
     unit: str | None
@@ -268,7 +287,7 @@ class Attribute(Strict):
         data = handler(self)
         if data.get("raw_value") == data.get("value"):
             data.pop("raw_value", None)
-        for key in ("unit", "description", "group"):
+        for key in ("status", "unit", "description", "group"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data

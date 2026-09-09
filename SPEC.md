@@ -1687,6 +1687,25 @@ reliability payload has been pulled for any reason.
   that says there is no URL. The advice could never work, and the error contradicted this
   section's own rule that a category CR runs no survey on is not a failure.
 
+- **`cr_url` names the page for the category ASKED FOR, never the page that filled the cache.**
+  One fetch fans out to every sibling the payload names, and each of those rows carries the
+  FETCHED page's final URL. So french-door reliability, answered from a row written while
+  fetching another page in the same family, cited *top-freezer* reliability as its source — the
+  brands were right and the citation was wrong, which inverts the normal debugging instinct: a
+  reader checking the source would conclude the numbers came from the wrong survey.
+
+  `cr_url` is the citation, so it is derived at serve time, not stored with the bytes: the
+  payload's `data.category` says which id was fetched (the rest are siblings), and for any other
+  id the URL is CR's own `reliabilityURL` for the one asked about — already cached for the whole
+  family by a single category fetch (`RECON.md` §9c). Deriving it per call rather than at write
+  time means a later category fetch repairs a row that was written before the URL was known.
+  Where CR publishes no survey for the id there is no page and `cr_url` is `null`; where the URL
+  is simply not cached yet it is `null` with `reliability_url_unknown`, because a constructed URL
+  is a guess and a guess is not a citation. Those two are different facts and stay different.
+
+  The one place the fetched URL still wins is the drift guard below: when the payload on hand
+  does not describe the category at all, the URL that landed elsewhere IS the diagnostic.
+
 #### Auth semantics — this tool is anonymous-only
 
 **`data-subscriber` does not appear on reliability pages at all** — zero occurrences of either
@@ -1884,7 +1903,7 @@ forbidden fallback is guessing from value shape. Unknown future types get the sa
 carried through with their declared name, value untouched.
 
 Each attribute normalizes to
-`{id, name, kind, value, raw_value, unit, description}`. Four traps, all real:
+`{id, name, kind, status, value, raw_value, unit, description}`. Four traps, all real:
 
 - **`unitName` exists — never infer a unit.** "Exterior width: 36" ships with
   `unitName: "in."` in the definition block. Join value to definition by `attributeId`.
@@ -1905,6 +1924,38 @@ Each attribute normalizes to
 
 Keeping `raw_value`, `id` and `description` makes the normalization lossless, so the only
 downside of normalizing — losing fidelity — does not apply.
+
+**A `0` on a rating column is CR's not-applicable marker, and `value` must not carry it.**
+Filed from a shortlist of upright freezers for an unheated garage: `Hot Garage Ready: 0` sat in a
+field whose declared range read `{min: 0, max: 5}`, so the one attribute the whole query existed
+to read could be "CR tested it in a hot room and it failed" or "CR never ran the test", with
+nothing in the response to say which. The two answers are opposites, and the first is a
+fabricated result about a real product.
+
+`RECON.md` §9i settles it. `0` never shares a rating column with `null`; 83 of 83 humidifiers
+scoring `0` on *Humidistat accuracy* have no humidistat, 6 of 6 TVs scoring `0` on *UHD picture
+quality* are not 4K sets, `0` appears on no anonymous row, and CR's own `ratingsBlobScale` runs
+1–5. So on `numeric-rating-score` **and nowhere else**:
+
+- `value` is `null`, as for any other cell CR publishes no number in;
+- **`status: "not_applicable"`** says why — the one token in that field's vocabulary, absent on
+  every other attribute, including an ordinary gated or missing null. It is not a second
+  `scores_available`: it never distinguishes a gated score from an absent one;
+- `raw_value` keeps the `0`, so the normalization stays lossless and the marker is still legible;
+- every availability derivation reads the marker as no value (`attributes.has_no_value`), so
+  `scores_available`, `attribute_all_null` and `is_scored` cannot disagree about one cell;
+- it matches no `features=` filter, including a `[0, 2]` range that spans it, and it is excluded
+  from the range `cr_filters` declares. Advertising `min: 0` on a five-point scale is what made
+  the marker read as a legal score in the first place.
+
+**The rule stops at rating columns.** `0` is a measurement on the other numeric kinds — 28 of
+215 laptops have no USB-A port, 174 of 293 mattresses no carry handles, 5 air purifiers no
+filter to buy — and those columns also carry zeros that are plainly gaps (`Annual usage cost: $0`
+on a freezer that runs). Nothing in the payload separates the two there: not the dictionary's
+value list, which stringifies every zero alike, and not the presence of `null`, which those
+columns never carry. Typing them would mean guessing, so they pass through as CR sent them and
+`status` stays absent. A caller reading `$0` on a price column is reading CR's own byte.
+
 
 **The category page carries a complete attribute dictionary — use it, not `attrs`.**
 
@@ -2292,6 +2343,7 @@ state either: an unfiltered listing is refused before the request (§5).
 | `availability_stale` | `availability` was merged from a reliability row past its TTL | `cr_product` |
 | `survey_flag_mismatch:<survey>` | CR's `HasReliabilityData` / `HasOwnerSatisfactionData` flag disagrees with whether that survey's rows are present (`reliability`, `owner_satisfaction`) | `cr_reliability` |
 | `typeahead_unavailable` | CR's typeahead failed or was challenged; only the local index was searched for categories | `cr_search` |
+| `reliability_url_unknown` | a sibling row from the fan-out answered and CR's own `reliabilityURL` for the requested id is not cached, so `cr_url` is `null` rather than another category's page. Distinct from `none_published`, where there is no page at all | `cr_reliability` |
 | `ratings_unavailable:<modelYearId>:<reason>` | one row's per-car ratings fetch failed under `detail="standard"`; the row is listed without its road-test keys | `cr_cars` |
 | `index_refresh_failed:<reason>` | the cars index refetch failed and the cached index answered | `cr_car_search` |
 | `session_expiring:<days>` | the stored cookie's remaining life — CR's own expiry when measured, the assumed 365-day bound otherwise — is inside 30 days (§6 *renewal*) | every tool that carries `session` |
@@ -2377,7 +2429,7 @@ sentence in the least-read place. They are spec text:
 
 | Tool | Description text |
 |---|---|
-| `cr_ratings` | Consumer Reports ratings for a product category, ranked within CR's own display groups. **A `null` score means "not visible in this session", never "CR did not rate this model" — check `auth_state`.** Scores are never estimated. |
+| `cr_ratings` | Consumer Reports ratings for a product category, ranked within CR's own display groups. **A `null` score means "not visible in this session", never "CR did not rate this model" — check `auth_state`, or `status` on the attribute itself, which reads `not_applicable` where CR does not run that test on that model.** Scores are never estimated. |
 | `cr_product` | Full Consumer Reports record for one product: every scored attribute, specs, owner satisfaction, retailer prices. Same `null` rule as `cr_ratings`. |
 | `cr_filters` | What is filterable in a category and the legal values, including attribute descriptions and units. Call this before guessing filter names. |
 | `cr_reliability` | Consumer Reports **brand-level** predicted reliability and owner satisfaction for a category. Brand-level, not model-level — these are survey results per brand, not a rating of any single product. Available without a membership. |
