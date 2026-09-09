@@ -61,7 +61,7 @@ class Harness:
         self.store = CredentialStore(tmp_path / "session.json", env={})
         if cookie:
             self.store.save({"hash": HASH, "userLicenses": "old"})
-        self.health = SessionState(self.store.configured)
+        self.health = SessionState(self.store.configured, store=self.store)
         self.sess = FakeWaferSession()
         self.transport = Transport(
             self.settings, self.store, self.health, session_factory=lambda **kw: self.sess
@@ -119,7 +119,7 @@ def _page(fixture, url=CAT_URL, **kw) -> FakeResponse:
         (False, "false", True, "anonymous", "none", "anonymous"),
         (True, "true", False, "member", "active", "member"),
         (True, "true", True, "member", "active", "member"),
-        (True, "false", False, "anonymous", "expired", "anonymous"),
+        (True, "false", False, "anonymous", "rejected", "anonymous"),
     ],
 )
 async def test_auth_state_matrix_end_to_end(
@@ -142,7 +142,7 @@ async def test_session_expired_page_is_served_as_data_with_error_null(tmp_path, 
     h.sess.push(_page(c37162, subscriber="false"))
     out = await h.repo.get_category(37162)
     assert isinstance(out, Served)
-    assert out.data_tier == "anonymous" and out.session == "expired"
+    assert out.data_tier == "anonymous" and out.session == "rejected"
     assert out.fetch_kind == ingest.SESSION_EXPIRED
     assert len(out.envelope["filter_instance"]["data"]) == 8  # the catalogue is real data
 
@@ -155,8 +155,8 @@ async def test_credential_rejected_falls_back_to_cache_then_anonymous_retry(tmp_
     )
     out = await h.repo.get_category("c37162")
     assert isinstance(out, Served)
-    assert out.data_tier == "anonymous" and out.session == "expired"
-    assert h.store.rejected is True and h.health.health is SessionHealth.EXPIRED
+    assert out.data_tier == "anonymous" and out.session == "rejected"
+    assert h.store.rejected is True and h.health.health is SessionHealth.DEAD
     assert h.requests == [CAT_URL, CAT_URL]
     with h.cache._connect() as conn:
         rows = conn.execute("SELECT auth_tier, payload_json FROM category_raw").fetchall()
@@ -169,11 +169,11 @@ async def test_dead_cookie_costs_one_probe_then_hits_anonymous_rows(tmp_path, c3
     h.seed(fixture_envelope(c37162), tier="anonymous", scored=False, age_days=1)
     h.sess.push(_page(c37162, subscriber="false"))
     first = await h.repo.get_category(37162)  # effective member → miss → probe → expired
-    assert isinstance(first, Served) and first.session == "expired"
+    assert isinstance(first, Served) and first.session == "rejected"
     assert len(h.requests) == 1
     second = await h.repo.get_category(37162)  # effective anonymous now → hit
     assert isinstance(second, Served) and second.from_cache is True
-    assert second.data_tier == "anonymous" and second.session == "expired"
+    assert second.data_tier == "anonymous" and second.session == "rejected"
     assert len(h.requests) == 1  # request log unchanged
 
 
@@ -406,7 +406,8 @@ async def test_double_rejection_falls_back_to_cached_row(tmp_path, c37162):
     )
     out = await h.repo.get_category(37162)
     assert isinstance(out, Served) and out.data_tier == "member"
-    assert out.warnings == ["refresh_failed:credential_rejected"] and out.session == "expired"
+    assert out.warnings == ["refresh_failed:credential_rejected"]
+    assert out.session == "rejected"  # CR refused it; the cookie itself has not run out
     assert h.requests == [CAT_URL, CAT_URL]
     # and with nothing cached it is a structured error, never a drift alarm
     h2 = Harness(tmp_path / "b", cookie=True)

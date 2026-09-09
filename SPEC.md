@@ -2790,6 +2790,28 @@ false` with `brands: []` — and having both meant the same condition could be a
 error, with `data` populated alongside a non-null `error` in violation of the rule below. A
 category CR runs no survey on is not a failure.
 
+**`expired` and `rejected` are different facts, and the server can tell them apart.** `session`
+carries five values, not four: `expired` is a claim about the CLOCK and is made **only** with
+local proof (`now > expires_at`, no fetch required); `rejected` is CR declining to honour a
+cookie that has not run out. `cr_auth_status.data.session_reason` names which observation
+produced it — `cookie_past_expiry`, `login_redirect` (CR sent the request to `/ec/login`,
+`RECON.md` §10b) or `served_anonymous` (an ordinary anonymous page with the cookie still in the
+jar, `RECON.md` §5). The clock wins when both apply: a cookie past its expiry is expired
+whatever CR answered. Not knowing the expiry is not proof of one, so a state with no store to
+ask reports `rejected` — what it actually observed.
+
+Collapsed into one word, this told a member with **363.7 days left** that their cookie had
+expired, with `reason: null`, while the real cause was a lapsed `userLicenses` of our own
+(§6 *the store never holds both*). The natural next sentence — "your cookie expired, re-capture
+it" — was false, and `days_left_max` sitting beside it read as a contradiction rather than as
+the useful fact that the cookie was fine. The notice said "has expired **or** was rejected",
+naming both because it could not tell; it now says which (`EXPIRED_FIX_WHAT`).
+
+`auth_state` deliberately keeps ONE token, `session_expired`, for both. It answers "why are
+these scores null", and the answer and the remedy are identical either way; splitting it would
+churn every products envelope for a distinction that belongs in `session` and `session_reason`,
+where it is a diagnostic rather than a cause of nulls.
+
 **`session_expired` names the path it can be fixed on**: `cr_sign_in` first, then
 `consumer-reports-mcp auth`, then "update `CR_SESSION_COOKIE` if the cookie came from there"
 (§6 *renewal*; the text is `envelope.EXPIRED_FIX_TEMPLATE`, appended to the `data.notice`).

@@ -21,7 +21,11 @@ from .config import SEARCH_QUERY_MAX_CHARS
 from .credentials import ENV_VAR
 
 AuthState = Literal["anonymous", "member", "session_expired"]
-Session = Literal["none", "unverified", "active", "expired"]
+# `expired` is a claim about the clock and is made ONLY with local proof (now > expires_at);
+# `rejected` is CR declining to honour a cookie that has not run out. Collapsed into one word,
+# the server told a member with 363 days left that their cookie had expired — see SPEC §7.
+Session = Literal["none", "unverified", "active", "expired", "rejected"]
+SessionReason = Literal["cookie_past_expiry", "login_redirect", "served_anonymous"]
 DataTier = Literal["anonymous", "member"]
 Availability = Literal["available", "absent", "unavailable"]
 CarAvailability = Literal["available", "absent"]
@@ -112,10 +116,17 @@ NOTICE_TEMPLATE = (
 # SPEC §7: `session_expired` names the path it can be fixed on — the in-conversation tool first,
 # then the CLI, then the env var for the one deployment where neither writes anything useful.
 EXPIRED_FIX_TEMPLATE = (
-    " The stored session cookie has expired or was rejected by Consumer Reports: call "
-    "`cr_sign_in` to connect the membership again (or run `consumer-reports-mcp auth`; if the "
-    "cookie came from the {env_var} environment variable, update it there)."
+    " The stored session cookie {what}: call `cr_sign_in` to connect the membership again (or "
+    "run `consumer-reports-mcp auth`; if the cookie came from the {env_var} environment "
+    "variable, update it there)."
 )
+# What to put in `{what}`. The old text said "has expired or was rejected" — naming both because
+# it could not tell, and inviting a member whose cookie had a year left to go hunting for an
+# expiry problem that did not exist.
+EXPIRED_FIX_WHAT = {
+    "expired": "has passed its expiry date",
+    "rejected": "has not expired, but Consumer Reports is no longer honouring it",
+}
 
 
 class Strict(BaseModel):
@@ -707,6 +718,15 @@ class AuthStatusData(Strict):
         "UPPER bound on its remaining life either way (CR can revoke a cookie early), never a "
         "promise; null unless the cookie came from the stored file"
     )
+    session_reason: SessionReason | None = Field(
+        default=None,
+        description="why `session` is expired or rejected, null otherwise: cookie_past_expiry "
+        "(the local clock passed expires_at — the ONLY case that justifies 'expired'), "
+        "login_redirect (CR sent the request to its login page), or served_anonymous (CR "
+        "returned an ordinary anonymous page with the cookie still in the jar). A rejected "
+        "cookie with days_left_max remaining is not a contradiction: it has not run out, CR "
+        "has simply stopped honouring it, and re-capturing is the fix in both cases",
+    )
     sign_in: SignInPhase = Field(
         description="idle: nothing in flight; verifying: the stored session is being checked "
         "before any window opens; waiting: a window is open; validating: a token was captured "
@@ -941,13 +961,20 @@ def auth_state(data_tier: str, session: str) -> str:
     the envelope carries `auth_state: null` (`AUTH_STATE_DESCRIPTION`), never a guess."""
     if data_tier == "member":
         return "member"
-    if data_tier == "anonymous" and session == "expired":
+    if data_tier == "anonymous" and session in ("expired", "rejected"):
+        # one token for both: this field answers "why are the scores null", and the answer and
+        # the remedy are the same either way. WHICH it was is `session` and `cr_auth_status`'s
+        # `session_reason`, where it is a diagnostic rather than a cause of nulls.
         return "session_expired"
     return "anonymous"
 
 
 def maybe_notice(
-    scores: dict[str, str] | ScoresAvailable | None, state: str, *, has_products: bool = True
+    scores: dict[str, str] | ScoresAvailable | None,
+    state: str,
+    *,
+    has_products: bool = True,
+    session: str | None = None,
 ) -> str | None:
     """Fires only when `overall_score == "unavailable"` — never on nullness alone (SPEC §7) —
     and only when there are products for it to be about: an empty category has nothing null,
@@ -959,7 +986,8 @@ def maybe_notice(
         return None
     text = NOTICE_TEMPLATE.format(auth_state=state)
     if state == "session_expired":
-        text += EXPIRED_FIX_TEMPLATE.format(env_var=ENV_VAR)
+        what = EXPIRED_FIX_WHAT.get(session or "", EXPIRED_FIX_WHAT["rejected"])
+        text += EXPIRED_FIX_TEMPLATE.format(what=what, env_var=ENV_VAR)
     return text
 
 

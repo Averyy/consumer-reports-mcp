@@ -337,7 +337,7 @@ class SignInFlow:
     def _answer(self, status: str, reason: str | None, instructions: str) -> E.SignInEnvelope:
         rt = self.rt
         return E.SignInEnvelope(
-            session=rt.health.health.value,
+            session=rt.health.reported,
             warnings=rt.session_warnings(),
             error=None,
             data=E.SignInData(
@@ -355,7 +355,7 @@ class SignInFlow:
         # assumed
         return (
             "A member session is stored and Consumer Reports confirmed it live in this process "
-            f"(session: {self.rt.health.health.value}), so signing in again would only replace "
+            f"(session: {self.rt.health.reported}), so signing in again would only replace "
             "a working cookie. Pass force=true to replace it anyway — for example to renew a "
             "cookie that is about to expire (cr_auth_status reports days_left_max). A cookie CR "
             "has rejected (session: expired), or one past its expiry, is renewed without force."
@@ -573,7 +573,7 @@ class SignInFlow:
         rt = self.rt
         st = rt.credentials.status()
         return E.AuthStatusEnvelope(
-            session=rt.health.health.value,
+            session=rt.health.reported,
             warnings=rt.session_warnings(),
             error=None,
             data=E.AuthStatusData(
@@ -582,6 +582,7 @@ class SignInFlow:
                 expires_at=st["expires_at"],
                 expiry_basis=st["expiry_basis"],
                 days_left_max=st["remaining_days_max"],
+                session_reason=rt.health.reason,
                 sign_in=self.phase,
                 reason=self.reason,
                 browser=self.browser,

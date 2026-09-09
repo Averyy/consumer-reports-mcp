@@ -42,7 +42,7 @@ def make_transport(tmp_path: Path, *, cookie: bool, env: dict | None = None, lic
         # a `userLicenses` is only ever STORED when it stands alone (SPEC §6): beside a `hash`
         # it is dropped, so `cookie=True` seeds the durable cookie and nothing else
         store.save({"userLicenses": "old-lic"} if licenses_only else {"hash": HASH})
-    health = SessionState(configured=store.configured)
+    health = SessionState(configured=store.configured, store=store)
     factory = Factory()
     t = Transport(settings, store, health, session_factory=factory)
     return t, factory, store, health
@@ -223,7 +223,7 @@ async def test_login_final_url_sets_rejected_and_retries_once_without_reseed(tmp
     r = await t.fetch(CAT_URL)
     assert r.credential_rejected is True and r.final_url == CAT_URL
     assert len(sess.requests) == 2
-    assert store.rejected is True and health.health is SessionHealth.EXPIRED
+    assert store.rejected is True and health.health is SessionHealth.DEAD
     seeds = [raw for raw, _ in sess.add_cookie_calls if "Max-Age=0" not in raw]
     assert len(seeds) == 1 and sess.get_cookie("hash", WWW + "/") is None  # construction only
     # and the credential stays dropped for the rest of the process: no re-seed on the next call
@@ -434,7 +434,7 @@ async def test_a_rotation_beside_a_hash_stays_in_the_jar_and_off_disk(tmp_path, 
 async def test_no_rotation_writeback_for_env_source(tmp_path, c37162):
     settings = Settings(env={}, home=tmp_path)
     store = CredentialStore(tmp_path / "session.json", env={"CR_SESSION_COOKIE": f"hash={HASH}"})
-    health = SessionState(configured=store.configured)
+    health = SessionState(configured=store.configured, store=store)
     factory = Factory()
     t = Transport(settings, store, health, session_factory=factory)
     factory.session.push(
@@ -536,7 +536,7 @@ def make_adoptable(tmp_path: Path, *, cookie: bool):
     store = CredentialStore(tmp_path / "session.json", env={})
     if cookie:
         store.save({"hash": HASH})
-    health = SessionState(configured=store.configured)
+    health = SessionState(configured=store.configured, store=store)
     factory = MultiFactory()
     return Transport(settings, store, health, session_factory=factory), factory, store, health
 
@@ -650,7 +650,7 @@ async def test_rejection_latch_still_holds_after_adopt(tmp_path, c37162):
     )
     r = await t.fetch(CAT_URL)
     assert r.credential_rejected is True and len(sess.requests) == 2
-    assert store.rejected is True and health.health is SessionHealth.EXPIRED
+    assert store.rejected is True and health.health is SessionHealth.DEAD
     seeds = [raw for raw, _ in sess.add_cookie_calls if "Max-Age=0" not in raw]
     sess.push(FakeResponse(url=CAT_URL, content=make_category_page(c37162, subscriber="false")))
     await t.fetch(CAT_URL)  # still no re-seed: the latch holds for this session

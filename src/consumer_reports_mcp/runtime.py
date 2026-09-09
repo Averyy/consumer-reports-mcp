@@ -75,7 +75,7 @@ def build_runtime(
     creds = credentials or default_store(settings.config_dir, env=env)
     if not creds.loaded:  # a preloaded (pasted, in-memory) store must not be re-read from disk
         creds.load()
-    health = SessionState(configured=creds.configured)
+    health = SessionState(configured=creds.configured, store=creds)
     transport = Transport(settings, creds, health, session_factory=session_factory)
     cache = Cache(settings.db_path)
     negcache = NegativeCache()

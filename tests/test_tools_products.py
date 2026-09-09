@@ -245,8 +245,12 @@ async def test_ratings_session_expired_served_as_data(tmp_path, c37162):
     h = RuntimeHarness(tmp_path, cookie=True)
     h.route_page(c37162, subscriber="false")
     out = await cr_ratings(h.rt, 37162)
-    assert out.error is None and out.auth_state == "session_expired" and out.session == "expired"
+    assert out.error is None and out.auth_state == "session_expired"
+    # the cookie has NOT run out — CR simply stopped honouring it, and the notice says which
+    assert out.session == "rejected"
     assert out.data.notice and "session_expired" in out.data.notice
+    assert "has not expired, but Consumer Reports is no longer honouring it" in out.data.notice
+    assert "has passed its expiry date" not in out.data.notice
 
 
 async def test_ratings_full_and_coercion_warning(tmp_path, c37162):
@@ -347,7 +351,7 @@ async def test_no_row_error_has_null_auth_state_never_a_guess(tmp_path, c37162):
     assert gone.provenance is None  # a member row cached elsewhere is not this envelope's tier
     h.rt.health.on_rejected()
     dead = await cr_ratings(h.rt, "c99999")
-    assert dead.error.code == "unknown_category" and dead.session == "expired"
+    assert dead.error.code == "unknown_category" and dead.session == "rejected"
     assert dead.auth_state is None  # `session` carries the fact; no row means no tier
 
 
@@ -364,7 +368,7 @@ async def test_filter_error_keeps_served_tier_in_auth_state(tmp_path, c37162):
     h.rt.health.on_rejected()
     out = await cr_ratings(h.rt, 37162, brands=["Nobody"])
     assert out.error.code == "invalid_filter_value" and out.auth_state == "member"
-    assert out.session == "expired"
+    assert out.session == "rejected"  # on_rejected(): CR refused it, the clock did not
     assert out.provenance is not None and out.provenance.data_tier == "member"
     assert out.provenance.from_cache is True and out.provenance.cr_url == CAT_URL
     assert out.provenance.fetched_at == "2026-09-03T12:00:00Z" and out.provenance.stale is False

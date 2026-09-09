@@ -299,7 +299,7 @@ def test_health_none_without_cookie_unverified_with():
     assert st.health is SessionHealth.UNVERIFIED
     assert st.effective_tier == "member"
     st.on_rejected()
-    assert st.health is SessionHealth.EXPIRED
+    assert st.health is SessionHealth.DEAD
     assert st.effective_tier == "anonymous"
     st.on_marker(True, credential_present=True)
     assert st.health is SessionHealth.ACTIVE
@@ -332,7 +332,7 @@ def test_health_moves_only_on_events_that_report_facts():
     st.on_marker(True, credential_present=False)  # a logged-in page this credential did not make
     assert st.health is SessionHealth.UNVERIFIED
     st.on_marker(False, credential_present=True)
-    assert st.health is SessionHealth.EXPIRED
+    assert st.health is SessionHealth.DEAD
     st.on_marker(True, credential_present=True)
     assert st.health is SessionHealth.ACTIVE
 
@@ -341,13 +341,13 @@ def test_health_moves_only_on_events_that_report_facts():
         st.on_probe_verdict(non_verdict)
         assert st.health is SessionHealth.UNVERIFIED, non_verdict
     st.on_probe_verdict("credential_rejected")
-    assert st.health is SessionHealth.EXPIRED
+    assert st.health is SessionHealth.DEAD
     st.on_probe_verdict("member")
     assert st.health is SessionHealth.ACTIVE
     st.on_probe_verdict("session_expired")
-    assert st.health is SessionHealth.EXPIRED
+    assert st.health is SessionHealth.DEAD
     st.on_rejected()
-    assert st.health is SessionHealth.EXPIRED
+    assert st.health is SessionHealth.DEAD
 
 
 def test_no_cookie_value_in_repr_or_logs(store_path: Path, caplog):
@@ -464,3 +464,59 @@ def test_session_health_has_one_writer():
         assert not re.search(r"\.mark_(active|expired)\(", text), path
         assert not re.search(r"health\.health\s*=[^=]", text), path
         assert not re.search(r"\.health\s*=\s*SessionHealth", text), path
+
+
+# --------------------------------------------------------------------------- expired ≠ rejected
+
+
+def test_expired_needs_the_clock_rejected_is_what_a_fetch_sees(store_path: Path):
+    """Filed against a cookie with 363.7 days left that the server called `expired`: two
+    conditions wore one word. `expired` is a claim about the CLOCK and is made only with local
+    proof; everything a fetch can observe is CR declining to honour a cookie that has not run
+    out. Reported as "expired", the natural next sentence to the owner — "your cookie expired,
+    re-capture it" — was false, and sent them looking for a problem that did not exist."""
+    from datetime import UTC, datetime, timedelta
+
+    from consumer_reports_mcp.credentials import expiry_from_posix
+
+    live = CredentialStore(store_path, env={})
+    live.save(
+        {"hash": HASH},
+        expires_at=expiry_from_posix((datetime.now(UTC) + timedelta(days=363)).timestamp()),
+    )
+    st = SessionState(configured=True, store=live)
+    assert st.reported == "unverified" and st.reason is None
+
+    st.on_rejected()  # CR redirected to /ec/login
+    assert st.health is SessionHealth.DEAD
+    assert st.reported == "rejected" and st.reason == "login_redirect"
+    assert live.status()["remaining_days_max"] > 360  # and that is NOT a contradiction
+
+    st.reconfigure(True)
+    st.on_marker(False, credential_present=True)  # an ordinary anonymous page, cookie in jar
+    assert st.reported == "rejected" and st.reason == "served_anonymous"
+
+    # the clock, and only the clock, earns the word "expired" — and it beats what a fetch saw
+    dead_path = store_path.parent / "dead.json"
+    lapsed = CredentialStore(dead_path, env={})
+    lapsed.save(
+        {"hash": HASH},
+        expires_at=expiry_from_posix((datetime.now(UTC) - timedelta(days=2)).timestamp()),
+    )
+    old = SessionState(configured=True, store=lapsed)
+    old.on_marker(False, credential_present=True)
+    assert old.reported == "expired" and old.reason == "cookie_past_expiry"
+
+
+def test_without_a_store_a_dead_session_is_rejected_never_expired():
+    """Not knowing the expiry is not proof of one. A `SessionState` with nothing to ask reports
+    what it actually observed."""
+    st = SessionState(configured=True)
+    st.on_probe_verdict("session_expired")
+    assert st.reported == "rejected" and st.reason == "served_anonymous"
+    st.reconfigure(True)
+    st.on_probe_verdict("credential_rejected")
+    assert st.reported == "rejected" and st.reason == "login_redirect"
+    # a live session carries no reason at all
+    st.on_probe_verdict("member")
+    assert st.reported == "active" and st.reason is None

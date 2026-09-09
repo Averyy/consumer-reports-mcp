@@ -271,15 +271,34 @@ async def test_a_dead_stored_cookie_is_renewed_without_force(tmp_path):
     assert out.data.status in STARTED and out.data.browser == "chrome", out.data
     assert validate.seen == [{"hash": STORED}]  # the STORED cookie, without a stale token
     assert len(capture.calls) == 1  # …was rejected, so the window opened
-    assert out.session == "expired" and h.rt.health.health is SessionHealth.EXPIRED
+    assert out.session == "rejected" and h.rt.health.health is SessionHealth.DEAD
     st = await cr_auth_status(h.rt)
-    assert st.data.sign_in == "waiting" and st.session == "expired"
+    assert st.data.sign_in == "waiting" and st.session == "rejected"
     assert stored_hash(h) == STORED  # nothing written yet
     gate.set()
     st = await settle(h)
     assert st.data.sign_in == "active" and st.session == "active"
     assert validate.seen[1] == {"hash": HASH}
     assert stored_hash(h) == HASH and h.rt.transport.adoptions == 1
+
+
+async def test_auth_status_names_which_of_the_two_dead_states_it_is(tmp_path):
+    """`reason` was null in exactly the case where it mattered (filed 2026-09-08). It now says
+    which observation produced `session`, and `days_left_max` beside `rejected` reads as the
+    fact it is: the cookie has not run out, CR has stopped honouring it."""
+    h = RuntimeHarness(tmp_path, cookie=True)
+    st = await cr_auth_status(h.rt)
+    assert st.session == "unverified" and st.data.session_reason is None
+
+    h.rt.health.on_rejected()
+    st = await cr_auth_status(h.rt)
+    assert st.session == "rejected" and st.data.session_reason == "login_redirect"
+    assert st.data.days_left_max is not None and st.data.days_left_max > 300
+
+    h.rt.health.reconfigure(True)
+    h.rt.health.on_marker(False, credential_present=True)
+    st = await cr_auth_status(h.rt)
+    assert st.session == "rejected" and st.data.session_reason == "served_anonymous"
 
 
 async def test_a_stored_cookie_cr_still_accepts_is_refused_after_the_check_not_before(tmp_path):
@@ -398,7 +417,7 @@ async def test_the_real_check_runs_the_shared_probe_against_the_stored_cookie(tm
     flow_for(h, capture=capture, validate=validate)
     out = await cr_sign_in(h.rt)
     assert out.data.status in STARTED, out.data
-    assert h.requests == [PROBE_URL] and h.rt.health.health is SessionHealth.EXPIRED
+    assert h.requests == [PROBE_URL] and h.rt.health.health is SessionHealth.DEAD
     assert h.sess.get_cookie("hash", WWW + "/") == STORED  # the stored cookie was what went out
     probe_member_page(h, c37162, subscriber="true")
     gate.set()
@@ -836,7 +855,13 @@ def test_sign_in_and_status_wear_the_outer_envelope_with_typed_status_objects():
     for model in (E.SignInEnvelope, E.AuthStatusEnvelope):
         assert list(model.model_fields) == ["session", "warnings", "error", "data"]
         s = model.model_json_schema()
-        assert s["properties"]["session"]["enum"] == ["none", "unverified", "active", "expired"]
+        assert s["properties"]["session"]["enum"] == [
+            "none",
+            "unverified",
+            "active",
+            "expired",
+            "rejected",
+        ]
     s = E.SignInData.model_json_schema()
     assert s["properties"]["status"]["enum"] == [
         "waiting",

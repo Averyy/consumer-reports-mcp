@@ -103,7 +103,13 @@ def test_output_schema_has_enums():
         "member",
         "session_expired",
     ]
-    assert schema["properties"]["session"]["enum"] == ["none", "unverified", "active", "expired"]
+    assert schema["properties"]["session"]["enum"] == [
+        "none",
+        "unverified",
+        "active",
+        "expired",
+        "rejected",
+    ]
     sa = schema["$defs"]["ScoresAvailable"]["properties"]["overall_score"]
     assert sa["enum"] == ["available", "absent", "unavailable"]
     assert schema["$defs"]["Provenance"]["properties"]["data_tier"]["enum"] == [

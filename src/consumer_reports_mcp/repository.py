@@ -407,7 +407,7 @@ class Repository:
             from_cache=from_cache,
             stale=sel.stale,
             superseded_at=sel.superseded_at,
-            session=self.health.health.value,
+            session=self.health.reported,
             warnings=list(warnings or []),
             fetch_kind=fetch_kind,
         )

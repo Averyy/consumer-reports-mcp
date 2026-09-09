@@ -67,7 +67,7 @@ async def test_marker_true_sets_active_false_sets_expired(tmp_path):
     assert h.rt.health.health is SessionHealth.ACTIVE
     h.sess.route(CARS_PAGE_URL, FakeResponse(url=CARS_PAGE_URL, content=make_car_page(False)))
     await h.rt.cars.page_info(refresh=True)
-    assert h.rt.health.health is SessionHealth.EXPIRED
+    assert h.rt.health.health is SessionHealth.DEAD
 
 
 async def test_marker_read_from_html_never_from_cookie_presence(tmp_path):

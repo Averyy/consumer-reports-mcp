@@ -57,7 +57,7 @@ def _transport_error(exc: FetchFailed | Challenged) -> E.ToolError:
 
 
 def _session(rt: Runtime) -> str:
-    return rt.health.health.value
+    return rt.health.reported
 
 
 def _unknown_car(rt: Runtime, model_year_id: object) -> E.CarEnvelope:

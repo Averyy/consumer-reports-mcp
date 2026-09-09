@@ -92,7 +92,10 @@ class SessionHealth(enum.StrEnum):
     NONE = "none"  # no cookie configured
     UNVERIFIED = "unverified"  # configured, no marker-bearing fetch yet this process
     ACTIVE = "active"  # a fetch this process saw the logged-in marker
-    EXPIRED = "expired"  # a fetch this process saw the logged-out marker, or a rejection
+    # A fetch saw the logged-out marker, or CR rejected the credential. Deliberately NOT called
+    # "expired": this state is reached by observation, and whether the cookie has actually run
+    # out is a question about the clock that `reported` answers separately.
+    DEAD = "dead"
 
 
 # The verdict vocabulary `validate_cookies` speaks and `on_probe_verdict` listens to — the
@@ -100,6 +103,14 @@ class SessionHealth(enum.StrEnum):
 # because this module is a leaf (BOUNDARY 4); `tests/test_credentials.py` pins them to `ingest`'s.
 VERDICT_MEMBER = "member"
 DEAD_VERDICTS = frozenset({"session_expired", "credential_rejected"})
+
+# Why a configured credential stopped working. `expired` is a claim about the CLOCK and needs
+# local proof (`past_expiry`); everything a FETCH can observe is CR declining to honour the
+# cookie, which is a different fact and gets a different word (SPEC §7).
+REASON_PAST_EXPIRY = "cookie_past_expiry"  # now > expires_at: provable offline, no fetch
+REASON_LOGIN_REDIRECT = "login_redirect"  # CR sent the request to /ec/login (RECON §10b)
+REASON_SERVED_ANONYMOUS = "served_anonymous"  # an ordinary anonymous page, cookie still in jar
+DEAD_REASONS = (REASON_PAST_EXPIRY, REASON_LOGIN_REDIRECT, REASON_SERVED_ANONYMOUS)
 
 
 class SessionState:
@@ -111,25 +122,30 @@ class SessionState:
     unless the transport asserted `hash` was still in the jar" (SPEC §6 rule 1), is therefore
     encoded once, in `on_marker`, rather than once per surface that reads a marker."""
 
-    def __init__(self, configured: bool) -> None:
+    def __init__(self, configured: bool, store: CredentialStore | None = None) -> None:
         self.health = SessionHealth.UNVERIFIED if configured else SessionHealth.NONE
+        # what a fetch observed when the credential stopped working; None until one does
+        self.dead_reason: str | None = None
+        # read only for `past_expiry` — the clock half of the answer, which no fetch can supply
+        self._store = store
 
     @property
     def configured(self) -> bool:
         return self.health is not SessionHealth.NONE
 
-    def _move(self, health: SessionHealth) -> None:
+    def _move(self, health: SessionHealth, reason: str | None = None) -> None:
         """A transition while configured. Unconfigured, nothing moves: a marker cannot promote
         (or expire) a process that holds no credential."""
         if self.configured:
             self.health = health
+            self.dead_reason = reason if health is SessionHealth.DEAD else None
 
     # --- events ----------------------------------------------------------------------
     def on_rejected(self) -> None:
         """CR answered a `www.` request by redirecting to `/ec/login` (RECON §10b): the
         configured credential is dead for the process. Reported by the transport, the one
         place the route is seen."""
-        self._move(SessionHealth.EXPIRED)
+        self._move(SessionHealth.DEAD, REASON_LOGIN_REDIRECT)
 
     def on_marker(self, is_member: bool | None, *, credential_present: bool) -> None:
         """A marker-bearing page was read — `data-subscriber` on a product page,
@@ -143,7 +159,10 @@ class SessionState:
         state."""
         if not credential_present or is_member is None:
             return
-        self._move(SessionHealth.ACTIVE if is_member else SessionHealth.EXPIRED)
+        if is_member:
+            self._move(SessionHealth.ACTIVE)
+        else:
+            self._move(SessionHealth.DEAD, REASON_SERVED_ANONYMOUS)
 
     def on_probe_verdict(self, verdict: str) -> None:
         """`validate_cookies`' verdict on the STORED credential (the probe IS a marker-bearing
@@ -153,13 +172,19 @@ class SessionState:
         if verdict == VERDICT_MEMBER:
             self._move(SessionHealth.ACTIVE)
         elif verdict in DEAD_VERDICTS:
-            self._move(SessionHealth.EXPIRED)
+            self._move(
+                SessionHealth.DEAD,
+                REASON_LOGIN_REDIRECT
+                if verdict == "credential_rejected"
+                else REASON_SERVED_ANONYMOUS,
+            )
 
     def reconfigure(self, configured: bool) -> None:
         """A credential adopted (or forgotten) mid-process: back to the cold-start state for the
         new configuration — `unverified` with a cookie, `none` without. No other event can do
         this because every other transition is a no-op while unconfigured, by design."""
         self.health = SessionHealth.UNVERIFIED if configured else SessionHealth.NONE
+        self.dead_reason = None
 
     @property
     def effective_tier(self) -> str:
@@ -168,8 +193,39 @@ class SessionState:
             return "member"
         return "anonymous"
 
+    @property
+    def past_expiry(self) -> bool:
+        """The cookie is past its own recorded expiry — the ONLY evidence that justifies the
+        word "expired". False when there is no store to ask or no expiry recorded: not knowing
+        is not proof, and `reported` then says `rejected`, which is what was observed."""
+        if self._store is None:
+            return False
+        left = self._store.status().get("remaining_days_max")
+        return left is not None and left <= 0
+
+    @property
+    def reported(self) -> str:
+        """The envelope's `session` (SPEC §7). Splits the dead state on the axis the server can
+        actually prove: `expired` when the clock says so, `rejected` when CR declined to honour
+        a cookie that has not run out.
+
+        Reported as one word, "expired" meant the server told a member with 363 days left that
+        their cookie had expired — while the real cause was a lapsed `userLicenses` of our own
+        (`RECON.md` §5) and re-capturing was beside the point."""
+        if self.health is not SessionHealth.DEAD:
+            return self.health.value
+        return "expired" if self.past_expiry else "rejected"
+
+    @property
+    def reason(self) -> str | None:
+        """Which observation produced `reported`, or None while the session is not dead. The
+        clock beats a fetch: a cookie past its expiry is expired whatever CR said."""
+        if self.health is not SessionHealth.DEAD:
+            return None
+        return REASON_PAST_EXPIRY if self.past_expiry else self.dead_reason
+
     def __repr__(self) -> str:
-        return f"SessionState(health={self.health.value})"
+        return f"SessionState(health={self.health.value}, reason={self.dead_reason})"
 
 
 # --------------------------------------------------------------------------- parsing
@@ -528,7 +584,7 @@ def expiry_warnings(store: CredentialStore, health: SessionState) -> list[str]:
     `remaining_days_max` truncated and clamped at 0 — counted from the cookie's own expiry when
     the browser sign-in measured one, else from the capture date plus the assumed lifetime, in
     which case the real deadline is that day or earlier, never later (`status()`)."""
-    if not health.configured or health.health is SessionHealth.EXPIRED:
+    if not health.configured or health.health is SessionHealth.DEAD:
         return []
     left = store.status().get("remaining_days_max")
     if left is None or left > EXPIRING_DAYS:

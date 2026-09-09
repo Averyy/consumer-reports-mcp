@@ -110,7 +110,7 @@ def _ratings_error(rt: Runtime, err: Any, *, served: Served | None = None) -> E.
     With no row both are null, and `session` alone says how the credential is."""
     return E.RatingsEnvelope(
         auth_state=E.auth_state(served.data_tier, served.session) if served is not None else None,
-        session=served.session if served is not None else rt.health.health.value,
+        session=served.session if served is not None else rt.health.reported,
         scores_available=None,
         provenance=_provenance(served) if served is not None else None,
         sort=None,
@@ -207,7 +207,9 @@ async def cr_ratings(
         ordered, sort_info = order_products(
             filtered, fi, ranks, sort=sort, order=order, flat=not nested
         )
-        session_notice = E.maybe_notice(scores, state, has_products=bool(filtered))
+        session_notice = E.maybe_notice(
+            scores, state, has_products=bool(filtered), session=served.session
+        )
         notice_parts = [n for n in (session_notice, sort_info.notice) if n]
         ref = _category_ref(rt, env)
         sizes = group_sizes(fi)
@@ -343,7 +345,7 @@ async def cr_filters(rt: Runtime, category: str | int, refresh: bool = False) ->
     if isinstance(served, ToolError):
         return E.FiltersEnvelope(
             auth_state=None,  # no row was served (SPEC §7)
-            session=rt.health.health.value,
+            session=rt.health.reported,
             scores_available=None,
             provenance=None,
             warnings=list(_base_warnings(rt)),
@@ -462,7 +464,7 @@ async def cr_product(
     if isinstance(served, ToolError):
         return E.ProductEnvelope(
             auth_state=None,  # no row was served (SPEC §7)
-            session=rt.health.health.value,
+            session=rt.health.reported,
             scores_available=None,
             provenance=None,
             warnings=list(_base_warnings(rt)),
@@ -516,7 +518,7 @@ async def cr_product(
             category=_category_ref(rt, env),
             product=E.ProductFull(**shape),
             availability=availability,
-            notice=E.maybe_notice(scores, state),
+            notice=E.maybe_notice(scores, state, session=served.session),
         ),
     )
 
@@ -587,7 +589,7 @@ async def cr_categories(
     if not rt.discovery.az_done():
         failure = rt.discovery.az_failure or {"code": "fetch_failed"}
         return E.CategoriesEnvelope(
-            session=rt.health.health.value,
+            session=rt.health.reported,
             provenance=None,
             warnings=list(_base_warnings(rt)),
             error=E.ToolError(
@@ -607,7 +609,7 @@ async def cr_categories(
             fam = int(str(family).lstrip("cC"))
         except ValueError:
             return E.CategoriesEnvelope(
-                session=rt.health.health.value,
+                session=rt.health.reported,
                 provenance=_index_provenance(rt, fetched),
                 warnings=list(_base_warnings(rt)),
                 error=E.ToolError(
@@ -623,7 +625,7 @@ async def cr_categories(
             # "this family holds nothing" rather than "that is not a family"
             legal = E.quoted_list(known, lambda f: f"{f['id']} ({E.quoted(f['name'])})")
             return E.CategoriesEnvelope(
-                session=rt.health.health.value,
+                session=rt.health.reported,
                 provenance=_index_provenance(rt, fetched),
                 warnings=list(_base_warnings(rt)),
                 error=E.ToolError(
@@ -645,7 +647,7 @@ async def cr_categories(
     scoped = franchise is not None or fam is not None
     items = [_enriched(r) if scoped else _lean(r) for r in rows]
     return E.CategoriesEnvelope(
-        session=rt.health.health.value,
+        session=rt.health.reported,
         provenance=_index_provenance(rt, fetched),
         warnings=list(_base_warnings(rt)),
         error=None,
@@ -682,7 +684,7 @@ async def cr_search(rt: Runtime, query: str, refresh: bool = False) -> E.SearchE
     warnings: list[str] = []
     if (bad := E.bad_query(q)) is not None:
         return E.SearchEnvelope(
-            session=rt.health.health.value,
+            session=rt.health.reported,
             provenance=None,
             warnings=list(_base_warnings(rt)),
             error=bad,
@@ -775,7 +777,7 @@ async def cr_search(rt: Runtime, query: str, refresh: bool = False) -> E.SearchE
         for c in rt.cache.cached_category_ids()
     ]
     return E.SearchEnvelope(
-        session=rt.health.health.value,
+        session=rt.health.reported,
         provenance=_index_provenance(rt, fetched),
         warnings=warnings + _base_warnings(rt),
         error=None,
